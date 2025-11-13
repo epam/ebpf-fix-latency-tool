@@ -15,7 +15,7 @@ def main():
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     s.bind(("127.0.0.1", 8080))
     s.listen(1)
-    print("Server listening on 127.0.0.1:8080")
+    print("Server listening on 127.0.0.1:8080", flush=True)
     conn, addr = s.accept()
     print("Connection from", addr)
     conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -27,6 +27,7 @@ def main():
     while running:
         data = conn.recv(2048)
         if not data:
+            print(f"Connection closed by client after {msg_count} messages")
             break
 
         msg_count += 1
