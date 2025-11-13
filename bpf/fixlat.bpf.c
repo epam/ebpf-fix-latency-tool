@@ -235,6 +235,7 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
         }
         
         stat_inc(&st->outbound_total);
+        }
     }
     return TC_ACT_OK;
 }
