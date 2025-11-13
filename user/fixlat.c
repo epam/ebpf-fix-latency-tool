@@ -10,7 +10,6 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <net/if.h>
-#include <arpa/inet.h>
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -72,11 +71,10 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
         (unsigned long long)p90,
         (unsigned long long)p99,
         (unsigned long long)p999);
-    printf("[DEBUG] total_pkts=%llu non_eth_ip=%llu non_tcp=%llu ip_port_filtered=%llu no_tag11=%llu empty_payload=%llu\n",
+    printf("[DEBUG] total_pkts=%llu non_eth_ip=%llu non_tcp=%llu no_tag11=%llu empty_payload=%llu\n",
         (unsigned long long)st.total_packets,
         (unsigned long long)st.non_eth_ip,
         (unsigned long long)st.non_tcp,
-        (unsigned long long)st.ip_port_filtered,
         (unsigned long long)st.no_tag11,
         (unsigned long long)st.empty_payload);
     printf("[DEBUG] has_payload=%llu payload_bytes=%llu avg_payload=%llu\n",
@@ -88,18 +86,17 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
 
 static void usage(const char *p){
     fprintf(stderr,
-        "Usage: %s -i <iface> [-a ipv4] [-p port] [-r seconds]\n"
-        "  -a  IPv4 address to watch (e.g., 10.0.0.5). 0.0.0.0 = any\n"
-        "  -p  TCP port to watch. 0 = any\n", p);
+        "Usage: %s -i <iface> [-p port] [-r seconds]\n"
+        "  -p  TCP port to watch (0 = any)\n"
+        "  -r  Report interval in seconds (default 5)\n", p);
 }
 
 int main(int argc, char **argv)
 {
-    const char *iface=NULL; const char *ip_str=NULL; uint16_t port=0; int opt;
-    while ((opt=getopt(argc, argv, "i:a:p:r:")) != -1) {
+    const char *iface=NULL; uint16_t port=0; int opt;
+    while ((opt=getopt(argc, argv, "i:p:r:")) != -1) {
         switch (opt) {
             case 'i': iface=optarg; break;
-            case 'a': ip_str=optarg; break;
             case 'p': port=(uint16_t)atoi(optarg); break;
             case 'r': report_every_sec=atoi(optarg); break;
             default: usage(argv[0]); return 1;
@@ -115,16 +112,8 @@ int main(int argc, char **argv)
     if (fixlat_bpf__load(skel)){ fprintf(stderr,"load skel failed\n"); return 1; }
 
     __u32 z=0;
-    struct config cfg={ .watch_ipv4=0, .watch_port=port };
-    if (ip_str && strcmp(ip_str,"0.0.0.0")!=0) {
-        struct in_addr a; 
-        if (inet_pton(AF_INET, ip_str, &a) == 1) {
-            cfg.watch_ipv4 = a.s_addr; // network byte order
-        } else {
-            fprintf(stderr, "Invalid IPv4: %s\n", ip_str);
-            return 1;
-        }
-    }
+    struct config cfg = {0};
+    cfg.watch_port = port;
     if (bpf_map_update_elem(bpf_map__fd(skel->maps.cfg_map), &z, &cfg, BPF_ANY) != 0) {
         fprintf(stderr, "Failed to update config map\n");
         return 1;
@@ -146,8 +135,8 @@ int main(int argc, char **argv)
     int fd_hist  = bpf_map__fd(skel->maps.hist_ns);
     int fd_stats = bpf_map__fd(skel->maps.stats_map);
 
-    printf("fixlat-kfifo: attached to %s (ip=%s, port=%u), reporting every %ds\n",
-           iface, ip_str?ip_str:"0.0.0.0", port, report_every_sec);
+    printf("fixlat-kfifo: attached to %s (port=%u), reporting every %ds\n",
+           iface, port, report_every_sec);
 
     while (running) {
         sleep(report_every_sec);

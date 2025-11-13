@@ -134,17 +134,13 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
     struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
     if (!cfg) return TC_ACT_OK;
 
-    // // Bidirectional IP/Port filter
-    // if (cfg->watch_ipv4 != 0) {
-    //     if (!(ip->saddr == cfg->watch_ipv4 || ip->daddr == cfg->watch_ipv4))
-    //         return TC_ACT_OK; // ignore
-    // }
-    // __u16 sport = bpf_ntohs(tcp->source);
-    // __u16 dport = bpf_ntohs(tcp->dest);
-    // if (cfg->watch_port != 0) {
-    //     if (!(sport == cfg->watch_port || dport == cfg->watch_port))
-    //         return TC_ACT_OK; // ignore
-    // }
+    // Bidirectional TCP port filter (0 = any)
+    __u16 sport = bpf_ntohs(tcp->source);
+    __u16 dport = bpf_ntohs(tcp->dest);
+    if (cfg->watch_port != 0) {
+        if (!(sport == cfg->watch_port || dport == cfg->watch_port))
+            return TC_ACT_OK; // ignore
+    }
 
     unsigned char *payload = (void *)tcp + doff;
     if (payload >= (unsigned char *)data_end) {
