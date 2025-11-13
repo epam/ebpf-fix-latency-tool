@@ -36,6 +36,14 @@ struct {
     __type(value, struct fixlat_stats);
 } stats_map SEC(".maps");
 
+// Per-CPU array for temporary tag buffer to reduce stack usage
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, char[FIXLAT_MAX_TAGVAL_LEN]);
+} tagbuf_map SEC(".maps");
+
 static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
 
 static __always_inline __u32 log2_bucket(__u64 ns) {
@@ -55,12 +63,13 @@ static __always_inline void hist_add(__u64 delta_ns) {
     if (slot) __sync_fetch_and_add(slot, 1);
 }
 
-static __always_inline int extract_tag11(void *data, void *data_end, char out[FIXLAT_MAX_TAGVAL_LEN], __u8 *olen) {
+// Remove __always_inline to reduce verifier complexity
+static __noinline int extract_tag11(void *data, void *data_end, char out[FIXLAT_MAX_TAGVAL_LEN], __u8 *olen) {
     unsigned char *p = data, *end = data_end;
 
-    // Bounded loop to satisfy verifier - reduced to 128 iterations
+    // Reduced to 64 iterations to lower verifier burden
     #pragma clang loop unroll(disable)
-    for (int i = 0; i < 128; i++) {
+    for (int i = 0; i < 64; i++) {
         // Explicit bounds check before access
         if (p + 3 > end)
             break;
@@ -124,7 +133,10 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
     unsigned char *payload = (void *)tcp + doff;
     if (payload >= (unsigned char *)data_end) return TC_ACT_OK;
 
-    char tagbuf[FIXLAT_MAX_TAGVAL_LEN] = {};
+    // Use per-CPU map for tagbuf to reduce stack usage
+    char *tagbuf = bpf_map_lookup_elem(&tagbuf_map, &z);
+    if (!tagbuf) return TC_ACT_OK;
+    
     __u8 tlen = 0;
     if (extract_tag11(payload, data_end, tagbuf, &tlen) != 0) {
         // Not a FIX message or doesn't contain tag 11, ignore silently
@@ -141,24 +153,29 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
         bpf_map_push_elem(&pending_q, &req, 0);
         stat_inc(&st->inbound_total);
     } else {
-        #define MAX_POPS 4
-        int pops = 0;
+        // Reduced to 2 iterations to lower verifier complexity
+        #define MAX_POPS 2
         struct pending_req head;
         bool matched = false;
-        bool queue_empty = false;
 
-        while (pops++ < MAX_POPS) {
-            // Atomically pop element (fixes race condition)
+        #pragma clang loop unroll(disable)
+        for (int pops = 0; pops < MAX_POPS; pops++) {
+            // Atomically pop element
             if (bpf_map_pop_elem(&pending_q, &head) != 0) {
-                queue_empty = true;
                 break; // queue empty
             }
             
             // Compare head.tag vs current outbound tag
             bool eq = (head.len == tlen);
-            #pragma clang loop unroll(disable)
-            for (int i=0; eq && i<FIXLAT_MAX_TAGVAL_LEN && i<tlen; i++) {
-                if (head.tag[i] != tagbuf[i]) eq = false;
+            if (eq) {
+                #pragma clang loop unroll(disable)
+                for (int i=0; i<FIXLAT_MAX_TAGVAL_LEN; i++) {
+                    if (i >= tlen) break;
+                    if (head.tag[i] != tagbuf[i]) {
+                        eq = false;
+                        break;
+                    }
+                }
             }
             
             if (eq) {
@@ -168,7 +185,7 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
                 break;
             }
             
-            // Not a match: count and continue (bounded by MAX_POPS)
+            // Not a match: count and continue
             stat_inc(&st->fifo_missed);
         }
         
