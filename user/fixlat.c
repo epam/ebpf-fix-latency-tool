@@ -1,4 +1,3 @@
-// user/fixlat.c
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +10,7 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <net/if.h>
+#include <arpa/inet.h>
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -21,7 +21,6 @@ static volatile bool running = true;
 static int report_every_sec = 5;
 
 static void on_sig(int s){ (void)s; running=false; }
-
 static uint64_t buckets[64];
 
 static uint64_t percentile_from_buckets(double p) {
@@ -54,8 +53,7 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
 
     __uint128_t matched=0; for (int i=0;i<64;i++) matched += buckets[i];
 
-    printf("[fixlat-kfifo] matched=%llu inbound=%llu outbound=%llu fifo_missed=%llu unmatched_out=%llu  p50=%lluus p90=%lluus p99=%lluus p99.9=%lluus
-",
+    printf("[fixlat-kfifo] matched=%llu inbound=%llu outbound=%llu fifo_missed=%llu unmatched_out=%llu  p50=%lluus p90=%lluus p99=%lluus p99.9=%lluus\n",
         (unsigned long long)matched,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
@@ -69,17 +67,20 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
 }
 
 static void usage(const char *p){
-    fprintf(stderr,"Usage: %s -i <iface> [-s sport] [-d dport] [-r seconds]\n", p);
+    fprintf(stderr,
+        "Usage: %s -i <iface> [-a ipv4] [-p port] [-r seconds]\n"
+        "  -a  IPv4 address to watch (e.g., 10.0.0.5). 0.0.0.0 = any\n"
+        "  -p  TCP port to watch. 0 = any\n", p);
 }
 
 int main(int argc, char **argv)
 {
-    const char *iface=NULL; uint16_t sport=0,dport=0; int opt;
-    while ((opt=getopt(argc, argv, "i:s:d:r:")) != -1) {
+    const char *iface=NULL; const char *ip_str=NULL; uint16_t port=0; int opt;
+    while ((opt=getopt(argc, argv, "i:a:p:r:")) != -1) {
         switch (opt) {
             case 'i': iface=optarg; break;
-            case 's': sport=(uint16_t)atoi(optarg); break;
-            case 'd': dport=(uint16_t)atoi(optarg); break;
+            case 'a': ip_str=optarg; break;
+            case 'p': port=(uint16_t)atoi(optarg); break;
             case 'r': report_every_sec=atoi(optarg); break;
             default: usage(argv[0]); return 1;
         }
@@ -93,7 +94,17 @@ int main(int argc, char **argv)
     if (!skel){ fprintf(stderr,"open skel failed\n"); return 1; }
     if (fixlat_bpf__load(skel)){ fprintf(stderr,"load skel failed\n"); return 1; }
 
-    __u32 z=0; struct config cfg={ .watch_sport=sport, .watch_dport=dport, .enabled=1 };
+    __u32 z=0;
+    struct config cfg={ .watch_ipv4=0, .watch_port=port, .enabled=1 };
+    if (ip_str && strcmp(ip_str,"0.0.0.0")!=0) {
+        struct in_addr a; 
+        if (inet_pton(AF_INET, ip_str, &a) == 1) {
+            cfg.watch_ipv4 = a.s_addr; // network byte order
+        } else {
+            fprintf(stderr, "Invalid IPv4: %s\n", ip_str);
+            return 1;
+        }
+    }
     bpf_map_update_elem(bpf_map__fd(skel->maps.cfg_map), &z, &cfg, BPF_ANY);
 
     int ifindex = if_nametoindex(iface);
@@ -111,7 +122,8 @@ int main(int argc, char **argv)
     int fd_hist  = bpf_map__fd(skel->maps.hist_us);
     int fd_stats = bpf_map__fd(skel->maps.stats_map);
 
-    printf("fixlat-kfifo: attached to %s (sport=%u, dport=%u), reporting every %ds\n", iface, sport, dport, report_every_sec);
+    printf("fixlat-kfifo: attached to %s (ip=%s, port=%u), reporting every %ds\n",
+           iface, ip_str?ip_str:"0.0.0.0", port, report_every_sec);
 
     while (running) {
         sleep(report_every_sec);

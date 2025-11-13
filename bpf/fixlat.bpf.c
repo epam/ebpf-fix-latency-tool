@@ -1,4 +1,3 @@
-// bpf/fixlat.bpf.c
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -88,10 +87,17 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
     struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
     if (!cfg || !cfg->enabled) return TC_ACT_OK;
 
+    // Bidirectional IP/Port filter
+    if (cfg->watch_ipv4 != 0) {
+        if (!(ip->saddr == cfg->watch_ipv4 || ip->daddr == cfg->watch_ipv4))
+            return TC_ACT_OK; // ignore
+    }
     __u16 sport = bpf_ntohs(tcp->source);
     __u16 dport = bpf_ntohs(tcp->dest);
-    if (cfg->watch_sport && cfg->watch_sport != sport) return TC_ACT_OK;
-    if (cfg->watch_dport && cfg->watch_dport != dport) return TC_ACT_OK;
+    if (cfg->watch_port != 0) {
+        if (!(sport == cfg->watch_port || dport == cfg->watch_port))
+            return TC_ACT_OK; // ignore
+    }
 
     unsigned char *payload = (void *)tcp + doff;
     if (payload >= (unsigned char *)data_end) return TC_ACT_OK;

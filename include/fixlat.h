@@ -1,6 +1,7 @@
-// include/fixlat.h
 #ifndef FIXLAT_SHARED_H
 #define FIXLAT_SHARED_H
+
+#include <linux/types.h>
 
 #define FIXLAT_MAX_TAGVAL_LEN 32
 
@@ -24,9 +25,9 @@ struct fixlat_stats {
 };
 
 struct config {
-    __u16 watch_sport; // 0 = any
-    __u16 watch_dport; // 0 = any
-    __u8  enabled;     // 1 to enable
+    __u32 watch_ipv4; // network byte order; 0 = any
+    __u16 watch_port; // host order; 0 = any
+    __u8  enabled;
 };
 
 #endif
