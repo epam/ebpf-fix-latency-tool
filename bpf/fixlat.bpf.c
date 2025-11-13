@@ -153,12 +153,11 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
     if (!tagbuf) return TC_ACT_OK;
 
     // Process multiple FIX messages in one TCP packet
-    // TCP batches ~5 messages per packet even with TCP_NODELAY
     unsigned char *search_start = payload;
     int messages_found = 0;
 
     #pragma clang loop unroll(disable)
-    for (int msg_idx = 0; msg_idx < 10 && messages_found < 5; msg_idx++) {
+    for (int msg_idx = 0; msg_idx < 10; msg_idx++) {
         if (search_start >= (unsigned char *)data_end)
             break;
 
@@ -182,6 +181,7 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
             bpf_map_push_elem(&pending_q, &req, 0);
             stat_inc(&st->inbound_total);
         } else {
+            bool matched = false;
             struct pending_req head;
             if (bpf_map_peek_elem(&pending_q, &head) == 0) {
                 bool eq = (head.len == tlen);
@@ -196,20 +196,16 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
                     }
                 }
 
-                if (eq) {
-                    if (bpf_map_pop_elem(&pending_q, &head) == 0) {
-                        __u64 now = bpf_ktime_get_ns();
-                        hist_add(now - head.ts_ns);
-                    } else {
-                        stat_inc(&st->unmatched_outbound);
-                    }
-                } else {
-                    stat_inc(&st->unmatched_outbound);
+                if (eq && bpf_map_pop_elem(&pending_q, &head) == 0) {
+                    __u64 now = bpf_ktime_get_ns();
+                    hist_add(now - head.ts_ns);
+                    matched = true;
                 }
-            } else {
-                stat_inc(&st->unmatched_outbound);
             }
 
+            if (!matched) {
+                stat_inc(&st->unmatched_outbound);
+            }
             stat_inc(&st->outbound_total);
         }
     }
