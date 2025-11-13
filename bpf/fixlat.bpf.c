@@ -42,8 +42,11 @@ static __always_inline __u32 log2_bucket(__u64 ns) {
     if (!ns) return 0;
     __u32 b = 0;
     #pragma clang loop unroll(disable)
-    for (int i=0;i<63 && ns;i++) { ns >>= 1; if (ns) b++; }
-    if (b>63) b=63;
+    for (int i=0; i<64 && ns > 1; i++) {
+        ns >>= 1;
+        b++;
+    }
+    if (b > 63) b = 63;
     return b;
 }
 static __always_inline void hist_add(__u64 delta_ns) {
@@ -54,16 +57,32 @@ static __always_inline void hist_add(__u64 delta_ns) {
 
 static __always_inline int extract_tag11(void *data, void *data_end, char out[FIXLAT_MAX_TAGVAL_LEN], __u8 *olen) {
     unsigned char *p = data, *end = data_end;
-    for (; p + 3 <= end; p++) {
+
+    // Bounded loop to satisfy verifier - reduced to 128 iterations
+    #pragma clang loop unroll(disable)
+    for (int i = 0; i < 128; i++) {
+        // Explicit bounds check before access
+        if (p + 3 > end)
+            break;
+
         if (p[0]=='1' && p[1]=='1' && p[2]=='=') {
             p += 3;
             __u8 len = 0;
-            for (; p < end && *p != 0x01; p++) {
-                if (len < FIXLAT_MAX_TAGVAL_LEN) out[len++] = *p; else break;
+
+            // Bounded inner loop (don't unroll to keep code size small)
+            #pragma clang loop unroll(disable)
+            for (int j = 0; j < FIXLAT_MAX_TAGVAL_LEN; j++) {
+                if (p >= end)
+                    break;
+                if (*p == 0x01)
+                    break;
+                out[len++] = *p;
+                p++;
             }
             *olen = len;
             return 0;
         }
+        p++;
     }
     return -1;
 }
@@ -117,12 +136,12 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
 
     if (dir == DIR_INBOUND) {
         struct pending_req req = {.ts_ns=bpf_ktime_get_ns(), .len=tlen};
-        #pragma unroll
+        #pragma clang loop unroll(disable)
         for (int i=0;i<FIXLAT_MAX_TAGVAL_LEN;i++){ if (i<tlen) req.tag[i]=tagbuf[i]; }
         bpf_map_push_elem(&pending_q, &req, 0);
         stat_inc(&st->inbound_total);
     } else {
-        #define MAX_POPS 8
+        #define MAX_POPS 4
         int pops = 0;
         struct pending_req head;
         bool matched = false;
@@ -137,7 +156,7 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
             
             // Compare head.tag vs current outbound tag
             bool eq = (head.len == tlen);
-            #pragma unroll
+            #pragma clang loop unroll(disable)
             for (int i=0; eq && i<FIXLAT_MAX_TAGVAL_LEN && i<tlen; i++) {
                 if (head.tag[i] != tagbuf[i]) eq = false;
             }
