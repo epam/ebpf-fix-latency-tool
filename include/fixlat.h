@@ -1,7 +1,9 @@
 #ifndef FIXLAT_SHARED_H
 #define FIXLAT_SHARED_H
 
+#ifndef __BPF__
 #include <linux/types.h>
+#endif
 
 #define FIXLAT_MAX_TAGVAL_LEN 32
 

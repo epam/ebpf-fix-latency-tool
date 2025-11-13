@@ -3,6 +3,10 @@
 #include <bpf/bpf_endian.h>
 #include "fixlat.h"
 
+/* Network constants not in vmlinux.h */
+#define ETH_P_IP    0x0800
+#define TC_ACT_OK   0
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 struct {
@@ -113,8 +117,8 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
 
     if (dir == DIR_INBOUND) {
         struct pending_req req = {.ts_ns=bpf_ktime_get_ns(), .len=tlen};
-        #pragma clang loop unroll(disable)
-        for (int i=0;i<FIXLAT_MAX_TAGVAL_LEN;i++){ if (i<tlen) req.tag[i]=tagbuf[i]; else break; }
+        #pragma unroll
+        for (int i=0;i<FIXLAT_MAX_TAGVAL_LEN;i++){ if (i<tlen) req.tag[i]=tagbuf[i]; }
         bpf_map_push_elem(&pending_q, &req, 0);
         stat_inc(&st->inbound_total);
     } else {
@@ -133,7 +137,7 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
             
             // Compare head.tag vs current outbound tag
             bool eq = (head.len == tlen);
-            #pragma clang loop unroll(disable)
+            #pragma unroll
             for (int i=0; eq && i<FIXLAT_MAX_TAGVAL_LEN && i<tlen; i++) {
                 if (head.tag[i] != tagbuf[i]) eq = false;
             }

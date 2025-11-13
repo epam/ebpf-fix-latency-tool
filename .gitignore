@@ -1,0 +1,20 @@
+# Build artifacts
+bpf/vmlinux.h
+bpf/fixlat.bpf.o
+bpf/fixlat.skel.h
+user/fixlat
+
+# Build directories (if using other build systems)
+build/
+*.o
+*.a
+*.so
+*.so.*
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
