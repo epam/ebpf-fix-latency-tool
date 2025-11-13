@@ -51,7 +51,7 @@ static __always_inline void hist_add(__u64 delta_ns) {
 
 static __always_inline int extract_tag11(void *data, void *data_end, char out[FIXLAT_MAX_TAGVAL_LEN], __u8 *olen) {
     unsigned char *p = data, *end = data_end;
-    for (; p + 3 < end; p++) {
+    for (; p + 3 <= end; p++) {
         if (p[0]=='1' && p[1]=='1' && p[2]=='=') {
             p += 3;
             __u8 len = 0;
@@ -105,8 +105,7 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
     char tagbuf[FIXLAT_MAX_TAGVAL_LEN] = {};
     __u8 tlen = 0;
     if (extract_tag11(payload, data_end, tagbuf, &tlen) != 0) {
-        struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
-        if (st) stat_inc(&st->parse_errors);
+        // Not a FIX message or doesn't contain tag 11, ignore silently
         return TC_ACT_OK;
     }
 
@@ -126,25 +125,28 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
         bool matched = false;
 
         while (pops++ < MAX_POPS) {
-            if (bpf_map_peek_elem(&pending_q, &head) != 0) {
+            // Atomically pop element (fixes race condition)
+            if (bpf_map_pop_elem(&pending_q, &head) != 0) {
                 stat_inc(&st->unmatched_outbound);
-                break;
+                break; // queue empty
             }
+            
+            // Compare head.tag vs current outbound tag
             bool eq = (head.len == tlen);
-            if (eq) {
-                #pragma clang loop unroll(disable)
-                for (int i=0;i<FIXLAT_MAX_TAGVAL_LEN;i++){ if (i<tlen){ if (head.tag[i]!=tagbuf[i]){ eq=false; break; } } else break; }
+            #pragma clang loop unroll(disable)
+            for (int i=0; eq && i<FIXLAT_MAX_TAGVAL_LEN && i<tlen; i++) {
+                if (head.tag[i] != tagbuf[i]) eq = false;
             }
-            bpf_map_pop_elem(&pending_q, &head);
+            
             if (eq) {
                 __u64 now = bpf_ktime_get_ns();
-                __u64 delta = (now >= head.ts_ns) ? (now - head.ts_ns) : 0;
-                hist_add(delta);
+                hist_add(now - head.ts_ns);
                 matched = true;
                 break;
-            } else {
-                stat_inc(&st->fifo_missed);
             }
+            
+            // Not a match: count and continue (bounded by MAX_POPS)
+            stat_inc(&st->fifo_missed);
         }
         stat_inc(&st->outbound_total);
         (void)matched;

@@ -19,7 +19,6 @@ struct pending_req {
 struct fixlat_stats {
     __u64 inbound_total;
     __u64 outbound_total;
-    __u64 parse_errors;
     __u64 fifo_missed;
     __u64 unmatched_outbound;
 };

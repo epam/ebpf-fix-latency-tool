@@ -24,11 +24,11 @@ static void on_sig(int s){ (void)s; running=false; }
 static uint64_t buckets[64];
 
 static uint64_t percentile_from_buckets(double p) {
-    __uint128_t total = 0;
+    uint64_t total = 0;
     for (int i=0;i<64;i++) total += buckets[i];
     if (total == 0) return 0;
-    __uint128_t rank = (__uint128_t)((p/100.0)*(double)(total-1)) + 1;
-    __uint128_t acc = 0;
+    uint64_t rank = (uint64_t)((p/100.0)*(double)(total-1)) + 1;
+    uint64_t acc = 0;
     for (int i=0;i<64;i++) {
         acc += buckets[i];
         if (acc >= rank) return (i==0) ? 0 : (1ULL<<i);
@@ -38,20 +38,25 @@ static uint64_t percentile_from_buckets(double p) {
 
 static void snapshot_and_reset(int fd_hist, int fd_stats) {
     for (uint32_t i=0;i<64;i++) {
-        uint64_t v=0; bpf_map_lookup_elem(fd_hist, &i, &v); buckets[i]=v;
+        uint64_t v=0;
+        if (bpf_map_lookup_elem(fd_hist, &i, &v) == 0) {
+            buckets[i]=v;
+        } else {
+            buckets[i]=0;
+        }
     }
     for (uint32_t i=0;i<64;i++) {
         uint64_t zero=0; bpf_map_update_elem(fd_hist, &i, &zero, BPF_ANY);
     }
     uint32_t z=0; struct fixlat_stats st={0};
-    bpf_map_lookup_elem(fd_stats, &z, &st);
+    bpf_map_lookup_elem(fd_stats, &z, &st); // Defaults to zeros if lookup fails
 
     uint64_t p50  = percentile_from_buckets(50.0);
     uint64_t p90  = percentile_from_buckets(90.0);
     uint64_t p99  = percentile_from_buckets(99.0);
     uint64_t p999 = percentile_from_buckets(99.9);
 
-    __uint128_t matched=0; for (int i=0;i<64;i++) matched += buckets[i];
+    uint64_t matched=0; for (int i=0;i<64;i++) matched += buckets[i];
 
     printf("[fixlat-kfifo] matched=%llu inbound=%llu outbound=%llu fifo_missed=%llu unmatched_out=%llu  p50=%lluus p90=%lluus p99=%lluus p99.9=%lluus\n",
         (unsigned long long)matched,
@@ -105,13 +110,17 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    bpf_map_update_elem(bpf_map__fd(skel->maps.cfg_map), &z, &cfg, BPF_ANY);
+    if (bpf_map_update_elem(bpf_map__fd(skel->maps.cfg_map), &z, &cfg, BPF_ANY) != 0) {
+        fprintf(stderr, "Failed to update config map\n");
+        return 1;
+    }
 
     int ifindex = if_nametoindex(iface);
     if (!ifindex){ fprintf(stderr,"unknown iface %s\n", iface); return 1; }
     DECLARE_LIBBPF_OPTS(bpf_tc_hook, ing, .ifindex=ifindex, .attach_point=BPF_TC_INGRESS);
     DECLARE_LIBBPF_OPTS(bpf_tc_hook, egr, .ifindex=ifindex, .attach_point=BPF_TC_EGRESS);
-    bpf_tc_hook_create(&ing); bpf_tc_hook_create(&egr);
+    bpf_tc_hook_create(&ing); // May fail if already exists, ignore
+    bpf_tc_hook_create(&egr);
     DECLARE_LIBBPF_OPTS(bpf_tc_opts, ing_o, .prog_fd=bpf_program__fd(skel->progs.tc_ingress));
     DECLARE_LIBBPF_OPTS(bpf_tc_opts, egr_o, .prog_fd=bpf_program__fd(skel->progs.tc_egress));
     if (bpf_tc_attach(&ing, &ing_o)!=0){ fprintf(stderr,"attach ingress failed\n"); return 1; }
