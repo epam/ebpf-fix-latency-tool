@@ -147,26 +147,52 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
     // }
 
     unsigned char *payload = (void *)tcp + doff;
-    if (payload >= (unsigned char *)data_end) return TC_ACT_OK;
+    if (payload >= (unsigned char *)data_end) {
+        if (st) stat_inc(&st->empty_payload);
+        return TC_ACT_OK;
+    }
+
+    // Track payload size for debugging
+    __u64 payload_size = (unsigned char *)data_end - payload;
+    if (st) {
+        stat_inc(&st->has_payload);
+        __sync_fetch_and_add(&st->payload_bytes, payload_size);
+    }
 
     // Use per-CPU map for tagbuf to reduce stack usage
     char *tagbuf = bpf_map_lookup_elem(&tagbuf_map, &z);
     if (!tagbuf) return TC_ACT_OK;
-    
-    __u8 tlen = 0;
-    if (extract_tag11(payload, data_end, tagbuf, &tlen) != 0) {
-        // Not a FIX message or doesn't contain tag 11, ignore silently
-        if (st) stat_inc(&st->no_tag11);
-        return TC_ACT_OK;
-    }
 
-    if (dir == DIR_INBOUND) {
-        struct pending_req req = {.ts_ns=bpf_ktime_get_ns(), .len=tlen};
-        #pragma clang loop unroll(disable)
-        for (int i=0;i<FIXLAT_MAX_TAGVAL_LEN;i++){ if (i<tlen) req.tag[i]=tagbuf[i]; }
-        bpf_map_push_elem(&pending_q, &req, 0);
-        stat_inc(&st->inbound_total);
-    } else {
+    // Process multiple FIX messages in one TCP packet
+    // TCP batches ~5 messages per packet even with TCP_NODELAY
+    unsigned char *search_start = payload;
+    int messages_found = 0;
+
+    #pragma clang loop unroll(disable)
+    for (int msg_idx = 0; msg_idx < 10 && messages_found < 5; msg_idx++) {
+        if (search_start >= (unsigned char *)data_end)
+            break;
+
+        __u8 tlen = 0;
+        int tag11_offset = extract_tag11(search_start, data_end, tagbuf, &tlen);
+
+        if (tag11_offset != 0) {
+            // No Tag 11 found in remaining data
+            if (messages_found == 0 && st) {
+                stat_inc(&st->no_tag11);
+            }
+            break;
+        }
+
+        messages_found++;
+
+        if (dir == DIR_INBOUND) {
+            struct pending_req req = {.ts_ns=bpf_ktime_get_ns(), .len=tlen};
+            #pragma clang loop unroll(disable)
+            for (int i=0;i<FIXLAT_MAX_TAGVAL_LEN;i++){ if (i<tlen) req.tag[i]=tagbuf[i]; }
+            bpf_map_push_elem(&pending_q, &req, 0);
+            stat_inc(&st->inbound_total);
+        } else {
         // Reduced to 2 iterations to lower verifier complexity
         #define MAX_POPS 2
         struct pending_req head;

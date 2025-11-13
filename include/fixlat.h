@@ -29,11 +29,15 @@ struct fixlat_stats {
     __u64 non_tcp;
     __u64 ip_port_filtered;
     __u64 no_tag11;
+    __u64 empty_payload;
+    __u64 has_payload;
+    __u64 payload_bytes;
 };
 
 struct config {
     __u32 watch_ipv4; // network byte order; 0 = any
     __u16 watch_port; // host order; 0 = any
+    __u8  enabled;
 };
 
 #endif

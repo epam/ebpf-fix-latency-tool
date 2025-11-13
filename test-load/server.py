@@ -15,9 +15,10 @@ def main():
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     s.bind(("192.168.1.74", 8080))
     s.listen(1)
-    print("Server listening on 192.168.1.74:8080", flush=True)
+    print("Server listening on 192.168.1.74:8080 (TCP_NODELAY enabled)", flush=True)
     conn, addr = s.accept()
-    print("Connection from", addr)
+    print(f"Connection from {addr}", flush=True)
+    # Enable TCP_NODELAY on connection socket - responses sent immediately (no buffering)
     conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
     msg_count = 0
