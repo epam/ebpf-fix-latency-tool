@@ -23,7 +23,7 @@ struct {
     __uint(max_entries, 64);
     __type(key, __u32);
     __type(value, __u64);
-} hist_us SEC(".maps");
+} hist_ns SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -34,18 +34,17 @@ struct {
 
 static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
 
-static __always_inline __u32 log2_bucket(__u64 us) {
-    if (!us) return 0;
+static __always_inline __u32 log2_bucket(__u64 ns) {
+    if (!ns) return 0;
     __u32 b = 0;
     #pragma clang loop unroll(disable)
-    for (int i=0;i<63 && us;i++) { us >>= 1; if (us) b++; }
+    for (int i=0;i<63 && ns;i++) { ns >>= 1; if (ns) b++; }
     if (b>63) b=63;
     return b;
 }
 static __always_inline void hist_add(__u64 delta_ns) {
-    __u64 us = delta_ns / 1000;
-    __u32 b = log2_bucket(us);
-    __u64 *slot = bpf_map_lookup_elem(&hist_us, &b);
+    __u32 b = log2_bucket(delta_ns);
+    __u64 *slot = bpf_map_lookup_elem(&hist_ns, &b);
     if (slot) __sync_fetch_and_add(slot, 1);
 }
 
@@ -123,11 +122,12 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
         int pops = 0;
         struct pending_req head;
         bool matched = false;
+        bool queue_empty = false;
 
         while (pops++ < MAX_POPS) {
             // Atomically pop element (fixes race condition)
             if (bpf_map_pop_elem(&pending_q, &head) != 0) {
-                stat_inc(&st->unmatched_outbound);
+                queue_empty = true;
                 break; // queue empty
             }
             
@@ -148,8 +148,13 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
             // Not a match: count and continue (bounded by MAX_POPS)
             stat_inc(&st->fifo_missed);
         }
+        
+        // If we didn't match, increment unmatched counter
+        if (!matched) {
+            stat_inc(&st->unmatched_outbound);
+        }
+        
         stat_inc(&st->outbound_total);
-        (void)matched;
     }
     return TC_ACT_OK;
 }

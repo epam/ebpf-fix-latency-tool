@@ -2,7 +2,7 @@
 
 **Summary**
 
-`fixlat-kfifo` is a lightweight eBPF-based latency measurement tool designed to correlate inbound and outbound FIX protocol messages **entirely inside the Linux kernel**. It observes TCP packets on a given interface and matches messages by FIX Tag 11 (Client Order ID). For each correlated request–response pair, it computes latency (in microseconds) and updates an in-kernel **log2 histogram**. The histogram can be periodically read and reset from user space, allowing real-time latency distribution tracking with near-zero overhead.
+`fixlat-kfifo` is a lightweight eBPF-based latency measurement tool designed to correlate inbound and outbound FIX protocol messages **entirely inside the Linux kernel**. It observes TCP packets on a given interface and matches messages by FIX Tag 11 (Client Order ID). For each correlated request–response pair, it computes latency (in nanoseconds) and updates an in-kernel **log2 histogram**. The histogram can be periodically read and reset from user space, allowing real-time latency distribution tracking with near-zero overhead.
 
 This version adds a **bidirectional IP + TCP port filter**, so only traffic to/from a specific host and port pair is analyzed. The filter can be disabled by setting IP or port to zero.
 
@@ -11,7 +11,7 @@ This version adds a **bidirectional IP + TCP port filter**, so only traffic to/f
 * Entire correlation logic runs in kernel space (no userspace packet processing).
 * FIFO queue (`BPF_MAP_TYPE_QUEUE`) buffers pending inbound requests.
 * Outbound responses pop from the queue until Tag 11 matches.
-* In-kernel HDR-style histogram (log2 buckets, µs resolution).
+* In-kernel HDR-style histogram (log2 buckets, nanosecond resolution).
 * Userspace utility attaches tc filters, polls histogram, and prints percentiles.
 * Bidirectional filtering by one IPv4 address and TCP port.
 * Clean detachment with provided script.
@@ -44,7 +44,7 @@ sudo ./fixlat -i eno1 -a 0.0.0.0 -p 0
 Each line of output represents one histogram snapshot:
 
 ```
-[fixlat-kfifo] matched=25000 inbound=25210 outbound=25180 fifo_missed=3 unmatched_out=0  p50=12us p90=17us p99=36us p99.9=64us
+[fixlat-kfifo] matched=25000 inbound=25210 outbound=25180 fifo_missed=3 unmatched_out=0  p50=12000ns p90=17000ns p99=36000ns p99.9=64000ns
 ```
 
 ## Detach

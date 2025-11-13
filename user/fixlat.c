@@ -31,7 +31,7 @@ static uint64_t percentile_from_buckets(double p) {
     uint64_t acc = 0;
     for (int i=0;i<64;i++) {
         acc += buckets[i];
-        if (acc >= rank) return (i==0) ? 0 : (1ULL<<i);
+        if (acc >= rank) return (i==0) ? 1 : (1ULL<<i);  // Return 1ns for bucket 0
     }
     return (1ULL<<63);
 }
@@ -50,6 +50,10 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
     }
     uint32_t z=0; struct fixlat_stats st={0};
     bpf_map_lookup_elem(fd_stats, &z, &st); // Defaults to zeros if lookup fails
+    
+    // Reset statistics for next period
+    struct fixlat_stats zero_stats={0};
+    bpf_map_update_elem(fd_stats, &z, &zero_stats, BPF_ANY);
 
     uint64_t p50  = percentile_from_buckets(50.0);
     uint64_t p90  = percentile_from_buckets(90.0);
@@ -58,7 +62,7 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
 
     uint64_t matched=0; for (int i=0;i<64;i++) matched += buckets[i];
 
-    printf("[fixlat-kfifo] matched=%llu inbound=%llu outbound=%llu fifo_missed=%llu unmatched_out=%llu  p50=%lluus p90=%lluus p99=%lluus p99.9=%lluus\n",
+    printf("[fixlat-kfifo] matched=%llu inbound=%llu outbound=%llu fifo_missed=%llu unmatched_out=%llu  p50=%lluns p90=%lluns p99=%lluns p99.9=%lluns\n",
         (unsigned long long)matched,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
@@ -128,7 +132,7 @@ int main(int argc, char **argv)
 
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
 
-    int fd_hist  = bpf_map__fd(skel->maps.hist_us);
+    int fd_hist  = bpf_map__fd(skel->maps.hist_ns);
     int fd_stats = bpf_map__fd(skel->maps.stats_map);
 
     printf("fixlat-kfifo: attached to %s (ip=%s, port=%u), reporting every %ds\n",
