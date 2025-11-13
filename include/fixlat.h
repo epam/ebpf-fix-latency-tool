@@ -34,7 +34,6 @@ struct fixlat_stats {
 struct config {
     __u32 watch_ipv4; // network byte order; 0 = any
     __u16 watch_port; // host order; 0 = any
-    __u8  enabled;
 };
 
 #endif

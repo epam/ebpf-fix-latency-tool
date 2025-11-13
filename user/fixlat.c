@@ -110,7 +110,7 @@ int main(int argc, char **argv)
     if (fixlat_bpf__load(skel)){ fprintf(stderr,"load skel failed\n"); return 1; }
 
     __u32 z=0;
-    struct config cfg={ .watch_ipv4=0, .watch_port=port, .enabled=1 };
+    struct config cfg={ .watch_ipv4=0, .watch_port=port };
     if (ip_str && strcmp(ip_str,"0.0.0.0")!=0) {
         struct in_addr a; 
         if (inet_pton(AF_INET, ip_str, &a) == 1) {

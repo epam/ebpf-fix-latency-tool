@@ -131,7 +131,7 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
     __u32 doff = tcp->doff * 4;
 
     struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
-    if (!cfg || !cfg->enabled) return TC_ACT_OK;
+    if (!cfg) return TC_ACT_OK;
 
     // // Bidirectional IP/Port filter
     // if (cfg->watch_ipv4 != 0) {
