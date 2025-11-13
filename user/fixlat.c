@@ -72,6 +72,12 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
         (unsigned long long)p90,
         (unsigned long long)p99,
         (unsigned long long)p999);
+    printf("[DEBUG] total_pkts=%llu non_eth_ip=%llu non_tcp=%llu ip_port_filtered=%llu no_tag11=%llu\n",
+        (unsigned long long)st.total_packets,
+        (unsigned long long)st.non_eth_ip,
+        (unsigned long long)st.non_tcp,
+        (unsigned long long)st.ip_port_filtered,
+        (unsigned long long)st.no_tag11);
     fflush(stdout);
 }
 

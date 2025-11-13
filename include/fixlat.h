@@ -23,6 +23,12 @@ struct fixlat_stats {
     __u64 outbound_total;
     __u64 fifo_missed;
     __u64 unmatched_outbound;
+    // Debug counters
+    __u64 total_packets;
+    __u64 non_eth_ip;
+    __u64 non_tcp;
+    __u64 ip_port_filtered;
+    __u64 no_tag11;
 };
 
 struct config {

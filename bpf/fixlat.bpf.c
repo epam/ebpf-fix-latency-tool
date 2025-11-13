@@ -98,23 +98,32 @@ static __noinline int extract_tag11(void *data, void *data_end, char out[FIXLAT_
 
 static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir)
 {
+    __u32 z=0;
+    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+    if (st) stat_inc(&st->total_packets);
+
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
 
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
-    if (bpf_ntohs(eth->h_proto) != ETH_P_IP) return TC_ACT_OK;
+    if (bpf_ntohs(eth->h_proto) != ETH_P_IP) {
+        if (st) stat_inc(&st->non_eth_ip);
+        return TC_ACT_OK;
+    }
 
     struct iphdr *ip = (void *)(eth + 1);
     if ((void *)(ip + 1) > data_end) return TC_ACT_OK;
-    if (ip->protocol != IPPROTO_TCP) return TC_ACT_OK;
+    if (ip->protocol != IPPROTO_TCP) {
+        if (st) stat_inc(&st->non_tcp);
+        return TC_ACT_OK;
+    }
     __u32 ihl = ip->ihl * 4;
 
     struct tcphdr *tcp = (void *)ip + ihl;
     if ((void *)(tcp + 1) > data_end) return TC_ACT_OK;
     __u32 doff = tcp->doff * 4;
 
-    __u32 z=0;
     struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
     if (!cfg || !cfg->enabled) return TC_ACT_OK;
 
@@ -140,11 +149,9 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
     __u8 tlen = 0;
     if (extract_tag11(payload, data_end, tagbuf, &tlen) != 0) {
         // Not a FIX message or doesn't contain tag 11, ignore silently
+        if (st) stat_inc(&st->no_tag11);
         return TC_ACT_OK;
     }
-
-    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
-    if (!st) return TC_ACT_OK;
 
     if (dir == DIR_INBOUND) {
         struct pending_req req = {.ts_ns=bpf_ktime_get_ns(), .len=tlen};
