@@ -6,6 +6,10 @@
 /* Network constants not in vmlinux.h */
 #define ETH_P_IP    0x0800
 #define TC_ACT_OK   0
+/* ASCII control characters */
+#define SOH         0x01  /* Start of Header */
+/* Maximum payload size: MTU (1500) + some headroom for jumbo frames */
+#define MAX_PAYLOAD_SIZE 2000
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -36,13 +40,6 @@ struct {
     __type(value, struct fixlat_stats);
 } stats_map SEC(".maps");
 
-// Per-CPU array for temporary tag buffer to reduce stack usage
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, char[FIXLAT_MAX_TAGVAL_LEN]);
-} tagbuf_map SEC(".maps");
 
 
 enum tag11_state {
@@ -118,74 +115,68 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
         return TC_ACT_OK;
     }
 
-    // Use per-CPU map for tagbuf to reduce stack usage
-    char *tagbuf = bpf_map_lookup_elem(&tagbuf_map, &z);
-    if (!tagbuf) return TC_ACT_OK;
-
-    // Process multiple FIX messages in one TCP packet
-    unsigned char *search_start = payload;
+    // Process every character in the payload
+    unsigned char *cursor = payload;
+    unsigned char *payload_end = (unsigned char *)data_end;
 
     int state = LOOKING_FOR_SOH;
     __u8 tlen = 0;
+    unsigned char *tag11_start = NULL;  // Pointer to start of tag 11 value
 
     #pragma clang loop unroll(disable)
-    for (int msg_idx = 0; msg_idx < 10; msg_idx++) {
-        if (search_start >= (unsigned char *)data_end)
+    for (int i = 0; i < MAX_PAYLOAD_SIZE; i++) {
+        if (cursor >= payload_end)
             break;
-
-        unsigned char *cursor = search_start;
         
-
-        if (cursor >= (unsigned char *)data_end)
-            break;
-
         unsigned char c = *cursor++;
 
         switch (state) {
-        case LOOKING_FOR_SOH:
-            if (c == 0x01)
-                state = WAITING_FOR_FIRST_1_AFTER_SOH;
-            break;
-        case WAITING_FOR_FIRST_1_AFTER_SOH:
-            if (c == '1') {
-                state = WAITING_FOR_SECOND_1_AFTER_SOH;
-            } else {
-                state = LOOKING_FOR_SOH;
-            }
-            break;
-        case WAITING_FOR_SECOND_1_AFTER_SOH:
-            if (c == '1') {
-                state = WAITING_FOR_EQUALS_AFTER_TAG11;
-            } else {
-                state = LOOKING_FOR_SOH;
-            }
-            break;
-        case WAITING_FOR_EQUALS_AFTER_TAG11:
-            if (c == '=') {
-                state = READING_TAG11_VALUE;
-                tlen = 0;
-            } else {
-                state = LOOKING_FOR_SOH;
-            }
-            break;
-        case READING_TAG11_VALUE:
-            if (c == 0x01) {
-                state = FINISHED_PARSING_TAG11_VALUE;
-            } else if (tlen < FIXLAT_MAX_TAGVAL_LEN) { 
-                tagbuf[tlen++] = c; // tagbuf may contain value truncated to FIXLAT_MAX_TAGVAL_LEN
-            }
-            break;
+            case LOOKING_FOR_SOH:
+                if (c == SOH)
+                    state = WAITING_FOR_FIRST_1_AFTER_SOH;
+                break;
+            case WAITING_FOR_FIRST_1_AFTER_SOH:
+                if (c == '1') {
+                    state = WAITING_FOR_SECOND_1_AFTER_SOH;
+                } else {
+                    state = LOOKING_FOR_SOH;
+                }
+                break;
+            case WAITING_FOR_SECOND_1_AFTER_SOH:
+                if (c == '1') {
+                    state = WAITING_FOR_EQUALS_AFTER_TAG11;
+                } else {
+                    state = LOOKING_FOR_SOH;
+                }
+                break;
+            case WAITING_FOR_EQUALS_AFTER_TAG11:
+                if (c == '=') {
+                    state = READING_TAG11_VALUE;
+                    tlen = 0;
+                    tag11_start = cursor;  // cursor points to the character after '='
+                } else {
+                    state = LOOKING_FOR_SOH;
+                }
+                break;
+            case READING_TAG11_VALUE:
+                if (c == SOH) {
+                    state = FINISHED_PARSING_TAG11_VALUE;
+                } else if (tlen < FIXLAT_MAX_TAGVAL_LEN) { 
+                    tlen++;  // Just track length, don't copy
+                }
+                break;
         }
 
         if (state == FINISHED_PARSING_TAG11_VALUE) {
-            if (tlen > 0) {
-                /// do something with tagbuf
-
+            if (tlen > 0 && tag11_start != NULL) {
                 if (dir == DIR_INBOUND) {
                     struct pending_req req = {.ts_ns=bpf_ktime_get_ns(), .len=tlen};
+                    // Copy directly from packet buffer to req.tag
                     #pragma clang loop unroll(disable)
-                    for (int i=0;i<FIXLAT_MAX_TAGVAL_LEN;i++) { 
-                        if (i<tlen) req.tag[i]=tagbuf[i]; 
+                    for (int i=0; i<FIXLAT_MAX_TAGVAL_LEN && i<tlen; i++) {
+                        if (tag11_start + i < payload_end) {
+                            req.tag[i] = tag11_start[i];
+                        }
                     }
                     bpf_map_push_elem(&pending_q, &req, 0);
                     stat_inc(&st->inbound_total);
@@ -195,10 +186,14 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
                     if (bpf_map_peek_elem(&pending_q, &head) == 0) {
                         bool eq = (head.len == tlen);
                         if (eq) {
+                            // Compare directly from packet buffer with head.tag
                             #pragma clang loop unroll(disable)
-                            for (int i=0; i<FIXLAT_MAX_TAGVAL_LEN; i++) {
-                                if (i >= tlen) break;
-                                if (head.tag[i] != tagbuf[i]) {
+                            for (int i=0; i<tlen && i<FIXLAT_MAX_TAGVAL_LEN; i++) {
+                                if (tag11_start + i >= payload_end) {
+                                    eq = false;
+                                    break;
+                                }
+                                if (head.tag[i] != tag11_start[i]) {
                                     eq = false;
                                     break;
                                 }
@@ -218,21 +213,10 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
                     stat_inc(&st->outbound_total);
                 }
                 tlen = 0;
+                tag11_start = NULL;
             }
-            state = WAITING_FOR_SOH;
+            state = LOOKING_FOR_SOH;
         }
-
-
-
-        search_start = cursor;
-
-            // // No Tag 11 found in remaining data
-            // if (messages_found == 0 && st) {
-            //     stat_inc(&st->no_tag11);
-            // }
-
-
-        
     }
     return TC_ACT_OK;
 }
