@@ -6,7 +6,7 @@ SOH = b"\x01"
 def main():
     c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    c.connect(("127.0.0.1", 9009))
+    c.connect(("127.0.0.1", 8080))
     print("Connected to server")
 
     for i in range(10000):

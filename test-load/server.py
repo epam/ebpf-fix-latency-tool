@@ -6,9 +6,9 @@ SOH = b"\x01"  # FIX field separator
 def main():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    s.bind(("127.0.0.1", 9009))
+    s.bind(("127.0.0.1", 8080))
     s.listen(1)
-    print("Server listening on 127.0.0.1:9009")
+    print("Server listening on 127.0.0.1:8080")
     conn, addr = s.accept()
     print("Connection from", addr)
 
