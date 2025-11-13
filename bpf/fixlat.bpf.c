@@ -148,13 +148,6 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
         return TC_ACT_OK;
     }
 
-    // Track payload size for debugging
-    __u64 payload_size = (unsigned char *)data_end - payload;
-    if (st) {
-        stat_inc(&st->has_payload);
-        __sync_fetch_and_add(&st->payload_bytes, payload_size);
-    }
-
     // Use per-CPU map for tagbuf to reduce stack usage
     char *tagbuf = bpf_map_lookup_elem(&tagbuf_map, &z);
     if (!tagbuf) return TC_ACT_OK;

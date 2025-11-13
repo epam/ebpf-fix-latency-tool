@@ -77,10 +77,6 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
         (unsigned long long)st.non_tcp,
         (unsigned long long)st.no_tag11,
         (unsigned long long)st.empty_payload);
-    printf("[DEBUG] has_payload=%llu payload_bytes=%llu avg_payload=%llu\n",
-        (unsigned long long)st.has_payload,
-        (unsigned long long)st.payload_bytes,
-        st.has_payload > 0 ? (unsigned long long)(st.payload_bytes / st.has_payload) : 0ULL);
     fflush(stdout);
 }
 

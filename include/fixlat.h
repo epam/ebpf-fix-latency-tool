@@ -29,8 +29,6 @@ struct fixlat_stats {
     __u64 non_tcp;
     __u64 no_tag11;
     __u64 empty_payload;
-    __u64 has_payload;
-    __u64 payload_bytes;
 };
 
 struct config {
