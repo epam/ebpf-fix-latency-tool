@@ -66,7 +66,7 @@ static __always_inline void hist_add(__u64 delta_ns) {
 // Remove __always_inline to reduce verifier complexity
 static __noinline int extract_tag11(void *data, void *data_end, char out[FIXLAT_MAX_TAGVAL_LEN], __u8 *olen) {
     unsigned char *p = data, *end = data_end;
-    unsigned char *start = data;
+    bool at_field_start = true;  // First position is always at field start
 
     // Increased to 200 iterations to search deeper into FIX message
     // (Tag 11 often appears after header fields which can be 100+ bytes)
@@ -77,14 +77,12 @@ static __noinline int extract_tag11(void *data, void *data_end, char out[FIXLAT_
             break;
 
         // FIXED: Check for proper FIX field delimiter
-        // Tag 11 must be preceded by SOH (0x01) OR be at message start
-        bool at_field_start = (p == start) || (p > start && *(p-1) == 0x01);
-
+        // Tag 11 must be at field start (after SOH or at message beginning)
         if (at_field_start && p[0]=='1' && p[1]=='1' && p[2]=='=') {
             p += 3;
             __u8 len = 0;
 
-            // Bounded inner loop (don't unroll to keep code size small)
+            // Extract the value until SOH or end of packet
             #pragma clang loop unroll(disable)
             for (int j = 0; j < FIXLAT_MAX_TAGVAL_LEN; j++) {
                 if (p >= end)
@@ -97,6 +95,9 @@ static __noinline int extract_tag11(void *data, void *data_end, char out[FIXLAT_
             *olen = len;
             return 0;
         }
+
+        // Update field start flag: next position is at field start if current char is SOH
+        at_field_start = (*p == 0x01);
         p++;
     }
     return -1;
