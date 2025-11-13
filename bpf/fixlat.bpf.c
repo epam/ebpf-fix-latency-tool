@@ -66,15 +66,21 @@ static __always_inline void hist_add(__u64 delta_ns) {
 // Remove __always_inline to reduce verifier complexity
 static __noinline int extract_tag11(void *data, void *data_end, char out[FIXLAT_MAX_TAGVAL_LEN], __u8 *olen) {
     unsigned char *p = data, *end = data_end;
+    unsigned char *start = data;
 
-    // Reduced to 64 iterations to lower verifier burden
+    // Increased to 200 iterations to search deeper into FIX message
+    // (Tag 11 often appears after header fields which can be 100+ bytes)
     #pragma clang loop unroll(disable)
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < 200; i++) {
         // Explicit bounds check before access
         if (p + 3 > end)
             break;
 
-        if (p[0]=='1' && p[1]=='1' && p[2]=='=') {
+        // FIXED: Check for proper FIX field delimiter
+        // Tag 11 must be preceded by SOH (0x01) OR be at message start
+        bool at_field_start = (p == start) || (p > start && *(p-1) == 0x01);
+
+        if (at_field_start && p[0]=='1' && p[1]=='1' && p[2]=='=') {
             p += 3;
             __u8 len = 0;
 
@@ -83,7 +89,7 @@ static __noinline int extract_tag11(void *data, void *data_end, char out[FIXLAT_
             for (int j = 0; j < FIXLAT_MAX_TAGVAL_LEN; j++) {
                 if (p >= end)
                     break;
-                if (*p == 0x01)
+                if (*p == 0x01)  // Stop at field delimiter
                     break;
                 out[len++] = *p;
                 p++;
