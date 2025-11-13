@@ -182,48 +182,35 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
             bpf_map_push_elem(&pending_q, &req, 0);
             stat_inc(&st->inbound_total);
         } else {
-        // Reduced to 2 iterations to lower verifier complexity
-        #define MAX_POPS 2
-        struct pending_req head;
-        bool matched = false;
-
-        #pragma clang loop unroll(disable)
-        for (int pops = 0; pops < MAX_POPS; pops++) {
-            // Atomically pop element
-            if (bpf_map_pop_elem(&pending_q, &head) != 0) {
-                break; // queue empty
-            }
-            
-            // Compare head.tag vs current outbound tag
-            bool eq = (head.len == tlen);
-            if (eq) {
-                #pragma clang loop unroll(disable)
-                for (int i=0; i<FIXLAT_MAX_TAGVAL_LEN; i++) {
-                    if (i >= tlen) break;
-                    if (head.tag[i] != tagbuf[i]) {
-                        eq = false;
-                        break;
+            struct pending_req head;
+            if (bpf_map_peek_elem(&pending_q, &head) == 0) {
+                bool eq = (head.len == tlen);
+                if (eq) {
+                    #pragma clang loop unroll(disable)
+                    for (int i=0; i<FIXLAT_MAX_TAGVAL_LEN; i++) {
+                        if (i >= tlen) break;
+                        if (head.tag[i] != tagbuf[i]) {
+                            eq = false;
+                            break;
+                        }
                     }
                 }
+
+                if (eq) {
+                    if (bpf_map_pop_elem(&pending_q, &head) == 0) {
+                        __u64 now = bpf_ktime_get_ns();
+                        hist_add(now - head.ts_ns);
+                    } else {
+                        stat_inc(&st->unmatched_outbound);
+                    }
+                } else {
+                    stat_inc(&st->unmatched_outbound);
+                }
+            } else {
+                stat_inc(&st->unmatched_outbound);
             }
-            
-            if (eq) {
-                __u64 now = bpf_ktime_get_ns();
-                hist_add(now - head.ts_ns);
-                matched = true;
-                break;
-            }
-            
-            // Not a match: count and continue
-            stat_inc(&st->fifo_missed);
-        }
-        
-        // If we didn't match, increment unmatched counter
-        if (!matched) {
-            stat_inc(&st->unmatched_outbound);
-        }
-        
-        stat_inc(&st->outbound_total);
+
+            stat_inc(&st->outbound_total);
         }
     }
     return TC_ACT_OK;
