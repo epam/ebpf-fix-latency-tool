@@ -48,7 +48,7 @@ enum tag11_state {
     WAITING_FOR_SECOND_1_AFTER_SOH,
     WAITING_FOR_EQUALS_AFTER_TAG11,
     READING_TAG11_VALUE,
-    FINISHED_PARSING_TAG11_VALUE,
+    //FINISHED_PARSING_TAG11_VALUE,
 };
 
 static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
@@ -137,7 +137,7 @@ static __always_inline int handle_ingress(struct __sk_buff *skb)
 
     int state = LOOKING_FOR_SOH;
     struct pending_req req;
-    __builtin_memset(&req, 0, sizeof(req));
+    // __builtin_memset(&req, 0, sizeof(req));
     __u8 req_len = 0;
 
     int i = 0;
@@ -176,130 +176,126 @@ static __always_inline int handle_ingress(struct __sk_buff *skb)
                 break;
             case READING_TAG11_VALUE:
                 if (c == SOH) {
-                    state = FINISHED_PARSING_TAG11_VALUE;
+                    if (req_len > 0) {
+                        req.len = req_len;
+                        bpf_map_push_elem(&pending_q, &req, 0);
+                        stat_inc(&st->inbound_total);
+                    }
+                    state = LOOKING_FOR_SOH;
                 } else if (req_len < FIXLAT_MAX_TAGVAL_LEN) {
                     req.tag[req_len++] = c;
                 }
                 break;
         }
-
-        if (state == FINISHED_PARSING_TAG11_VALUE) {
-            if (req_len > 0) {
-                req.len = req_len;
-                bpf_map_push_elem(&pending_q, &req, 0);
-                stat_inc(&st->inbound_total);
-            }
-            state = LOOKING_FOR_SOH;
-        }
     }
     return TC_ACT_OK;
 }
 
-// EGRESS: Complex path - extract Tag 11 and match with queue
-static __always_inline int handle_egress(struct __sk_buff *skb)
-{
-    __u32 z = 0;
-    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
-    if (st) stat_inc(&st->total_packets);
+// // EGRESS: Complex path - extract Tag 11 and match with queue
+// static __always_inline int handle_egress(struct __sk_buff *skb)
+// {
+//     __u32 z = 0;
+//     struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+//     if (st) stat_inc(&st->total_packets);
 
-    unsigned char *payload_end;
-    unsigned char *payload = parse_packet_headers(skb, st, &payload_end);
-    if (!payload) return TC_ACT_OK;
+//     unsigned char *payload_end;
+//     unsigned char *payload = parse_packet_headers(skb, st, &payload_end);
+//     if (!payload) return TC_ACT_OK;
 
-    // Process every character in the payload
-    unsigned char *cursor = payload;
+//     // Process every character in the payload
+//     unsigned char *cursor = payload;
 
-    int state = LOOKING_FOR_SOH;
-    __u8 tlen = 0;
-    unsigned char *tag11_start = NULL;
+//     int state = LOOKING_FOR_SOH;
+//     __u8 tlen = 0;
+//     unsigned char *tag11_start = NULL;
 
-    int i = 0;
-    while (cursor < payload_end && i < MAX_PAYLOAD_SCAN) {
-        i++;
+//     int i = 0;
+//     while (cursor < payload_end && i < MAX_PAYLOAD_SCAN) {
+//         i++;
 
-        unsigned char c = *cursor++;
+//         unsigned char c = *cursor++;
 
-        switch (state) {
-            case LOOKING_FOR_SOH:
-                if (c == SOH)
-                    state = WAITING_FOR_FIRST_1_AFTER_SOH;
-                break;
-            case WAITING_FOR_FIRST_1_AFTER_SOH:
-                if (c == '1') {
-                    state = WAITING_FOR_SECOND_1_AFTER_SOH;
-                } else {
-                    state = LOOKING_FOR_SOH;
-                }
-                break;
-            case WAITING_FOR_SECOND_1_AFTER_SOH:
-                if (c == '1') {
-                    state = WAITING_FOR_EQUALS_AFTER_TAG11;
-                } else {
-                    state = LOOKING_FOR_SOH;
-                }
-                break;
-            case WAITING_FOR_EQUALS_AFTER_TAG11:
-                if (c == '=') {
-                    state = READING_TAG11_VALUE;
-                    tlen = 0;
-                    tag11_start = cursor;
-                } else {
-                    state = LOOKING_FOR_SOH;
-                }
-                break;
-            case READING_TAG11_VALUE:
-                if (c == SOH) {
-                    state = FINISHED_PARSING_TAG11_VALUE;
-                } else if (tlen < FIXLAT_MAX_TAGVAL_LEN) {
-                    tlen++;
-                }
-                break;
-        }
+//         switch (state) {
+//             case LOOKING_FOR_SOH:
+//                 if (c == SOH)
+//                     state = WAITING_FOR_FIRST_1_AFTER_SOH;
+//                 break;
+//             case WAITING_FOR_FIRST_1_AFTER_SOH:
+//                 if (c == '1') {
+//                     state = WAITING_FOR_SECOND_1_AFTER_SOH;
+//                 } else {
+//                     state = LOOKING_FOR_SOH;
+//                 }
+//                 break;
+//             case WAITING_FOR_SECOND_1_AFTER_SOH:
+//                 if (c == '1') {
+//                     state = WAITING_FOR_EQUALS_AFTER_TAG11;
+//                 } else {
+//                     state = LOOKING_FOR_SOH;
+//                 }
+//                 break;
+//             case WAITING_FOR_EQUALS_AFTER_TAG11:
+//                 if (c == '=') {
+//                     state = READING_TAG11_VALUE;
+//                     tlen = 0;
+//                     tag11_start = cursor;
+//                 } else {
+//                     state = LOOKING_FOR_SOH;
+//                 }
+//                 break;
+//             case READING_TAG11_VALUE:
+//                 if (c == SOH) {
+//                     state = FINISHED_PARSING_TAG11_VALUE;
+//                 } else if (tlen < FIXLAT_MAX_TAGVAL_LEN) {
+//                     tlen++;
+//                 }
+//                 break;
+//         }
 
-        if (state == FINISHED_PARSING_TAG11_VALUE) {
-            if (tlen > 0 && tag11_start != NULL) {
-                // EGRESS: Match with queue and measure latency
-                bool matched = false;
-                struct pending_req head;
-                if (bpf_map_peek_elem(&pending_q, &head) == 0) {
-                    bool eq = (head.len == tlen);
-                    if (eq) {
-                        #pragma clang loop unroll(disable)
-                        for (int i=0; i<tlen && i<FIXLAT_MAX_TAGVAL_LEN; i++) {
-                            if (tag11_start + i >= payload_end) {
-                                eq = false;
-                                break;
-                            }
-                            if (head.tag[i] != tag11_start[i]) {
-                                eq = false;
-                                break;
-                            }
-                        }
-                    }
+//         if (state == FINISHED_PARSING_TAG11_VALUE) {
+//             if (tlen > 0 && tag11_start != NULL) {
+//                 // EGRESS: Match with queue and measure latency
+//                 bool matched = false;
+//                 struct pending_req head;
+//                 if (bpf_map_peek_elem(&pending_q, &head) == 0) {
+//                     bool eq = (head.len == tlen);
+//                     if (eq) {
+//                         #pragma clang loop unroll(disable)
+//                         for (int i=0; i<tlen && i<FIXLAT_MAX_TAGVAL_LEN; i++) {
+//                             if (tag11_start + i >= payload_end) {
+//                                 eq = false;
+//                                 break;
+//                             }
+//                             if (head.tag[i] != tag11_start[i]) {
+//                                 eq = false;
+//                                 break;
+//                             }
+//                         }
+//                     }
 
-                    if (eq && bpf_map_pop_elem(&pending_q, &head) == 0) {
-                        __u64 now = bpf_ktime_get_ns();
-                        hist_add(now - head.ts_ns);
-                        matched = true;
-                    }
-                }
+//                     if (eq && bpf_map_pop_elem(&pending_q, &head) == 0) {
+//                         __u64 now = bpf_ktime_get_ns();
+//                         hist_add(now - head.ts_ns);
+//                         matched = true;
+//                     }
+//                 }
 
-                if (!matched) {
-                    stat_inc(&st->unmatched_outbound);
-                }
-                stat_inc(&st->outbound_total);
+//                 if (!matched) {
+//                     stat_inc(&st->unmatched_outbound);
+//                 }
+//                 stat_inc(&st->outbound_total);
 
-                tlen = 0;
-                tag11_start = NULL;
-            }
-            state = LOOKING_FOR_SOH;
-        }
-    }
-    return TC_ACT_OK;
-}
+//                 tlen = 0;
+//                 tag11_start = NULL;
+//             }
+//             state = LOOKING_FOR_SOH;
+//         }
+//     }
+//     return TC_ACT_OK;
+// }
 
 SEC("tc")
 int tc_ingress(struct __sk_buff *skb){ return handle_ingress(skb); }
 
-SEC("tc")
-int tc_egress(struct __sk_buff *skb){ return handle_egress(skb); }
+// SEC("tc")
+// int tc_egress(struct __sk_buff *skb){ return handle_egress(skb); }
