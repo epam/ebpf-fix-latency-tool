@@ -118,13 +118,13 @@ int main(int argc, char **argv)
     int ifindex = if_nametoindex(iface);
     if (!ifindex){ fprintf(stderr,"unknown iface %s\n", iface); return 1; }
     DECLARE_LIBBPF_OPTS(bpf_tc_hook, ing, .ifindex=ifindex, .attach_point=BPF_TC_INGRESS);
-    DECLARE_LIBBPF_OPTS(bpf_tc_hook, egr, .ifindex=ifindex, .attach_point=BPF_TC_EGRESS);
+    //DECLARE_LIBBPF_OPTS(bpf_tc_hook, egr, .ifindex=ifindex, .attach_point=BPF_TC_EGRESS);
     bpf_tc_hook_create(&ing); // May fail if already exists, ignore
-    bpf_tc_hook_create(&egr);
+    //bpf_tc_hook_create(&egr);
     DECLARE_LIBBPF_OPTS(bpf_tc_opts, ing_o, .prog_fd=bpf_program__fd(skel->progs.tc_ingress));
-    DECLARE_LIBBPF_OPTS(bpf_tc_opts, egr_o, .prog_fd=bpf_program__fd(skel->progs.tc_egress));
+    //DECLARE_LIBBPF_OPTS(bpf_tc_opts, egr_o, .prog_fd=bpf_program__fd(skel->progs.tc_egress));
     if (bpf_tc_attach(&ing, &ing_o)!=0){ fprintf(stderr,"attach ingress failed\n"); return 1; }
-    if (bpf_tc_attach(&egr, &egr_o)!=0){ fprintf(stderr,"attach egress failed\n"); return 1; }
+    //if (bpf_tc_attach(&egr, &egr_o)!=0){ fprintf(stderr,"attach egress failed\n"); return 1; }
 
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
 
