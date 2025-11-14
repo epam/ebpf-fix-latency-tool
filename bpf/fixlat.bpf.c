@@ -10,6 +10,7 @@
 #define SOH         0x01  /* Start of Header */
 /* Maximum payload scan size - reduced for verifier complexity */
 #define MAX_PAYLOAD_SCAN 256
+#define MAX_TAG11_PER_PKT 16
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -42,33 +43,25 @@ struct {
 
 
 
-enum tag11_state {
-    LOOKING_FOR_SOH = 0,
-    WAITING_FOR_FIRST_1_AFTER_SOH,
-    WAITING_FOR_SECOND_1_AFTER_SOH,
-    WAITING_FOR_EQUALS_AFTER_TAG11,
-    READING_TAG11_VALUE,
-    //FINISHED_PARSING_TAG11_VALUE,
-};
 
 static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
 
-static __always_inline __u32 log2_bucket(__u64 ns) {
-    if (!ns) return 0;
-    __u32 b = 0;
-    #pragma clang loop unroll(disable)
-    for (int i=0; i<64 && ns > 1; i++) {
-        ns >>= 1;
-        b++;
-    }
-    if (b > 63) b = 63;
-    return b;
-}
-static __always_inline void hist_add(__u64 delta_ns) {
-    __u32 b = log2_bucket(delta_ns);
-    __u64 *slot = bpf_map_lookup_elem(&hist_ns, &b);
-    if (slot) __sync_fetch_and_add(slot, 1);
-}
+// static __always_inline __u32 log2_bucket(__u64 ns) {
+//     if (!ns) return 0;
+//     __u32 b = 0;
+//     #pragma clang loop unroll(disable)
+//     for (int i=0; i<64 && ns > 1; i++) {
+//         ns >>= 1;
+//         b++;
+//     }
+//     if (b > 63) b = 63;
+//     return b;
+// }
+// static __always_inline void hist_add(__u64 delta_ns) {
+//     __u32 b = log2_bucket(delta_ns);
+//     __u64 *slot = bpf_map_lookup_elem(&hist_ns, &b);
+//     if (slot) __sync_fetch_and_add(slot, 1);
+// }
 
 // Common packet parsing - extract as __noinline to share code between ingress/egress
 // Returns payload pointer or NULL if packet should be ignored
@@ -125,68 +118,54 @@ static __noinline unsigned char* parse_packet_headers(
 static __always_inline int handle_ingress(struct __sk_buff *skb)
 {
     __u32 z = 0;
-    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z); //TODO: per cpu
     if (st) stat_inc(&st->total_packets);
 
-    unsigned char *payload_end;
-    unsigned char *payload = parse_packet_headers(skb, st, &payload_end);
+    unsigned char *payload_end, *payload = parse_packet_headers(skb, st, &payload_end);
     if (!payload) return TC_ACT_OK;
 
-    // Process every character in the payload
-    unsigned char *cursor = payload;
-
-    int state = LOOKING_FOR_SOH;
-    struct pending_req req;
-    // __builtin_memset(&req, 0, sizeof(req));
+    const __u32 TAG11 = ((uint32_t)SOH) | ((uint32_t)'1'<<8) | ((uint32_t)'1'<<16) | ((uint32_t)'='<<24);
+    uint32_t win = 0;
+    struct pending_req req = {};
     __u8 req_len = 0;
+    bool reading = false;       
+    __u32 tag11_count = 0;
 
-    int i = 0;
-    while (cursor < payload_end && i < MAX_PAYLOAD_SCAN) {
-        i++;
+    int avail = (int)(payload_end - payload);
+    if (avail <= 0) return TC_ACT_OK;
+    int scan_len = avail > MAX_PAYLOAD_SCAN ? MAX_PAYLOAD_SCAN : avail;
 
-        unsigned char c = *cursor++;
+    #pragma clang loop unroll(disable)
+    for (int idx = 0; idx < MAX_PAYLOAD_SCAN; idx++) {
+        if (idx >= scan_len) break;
+        unsigned char c = ((unsigned char *)payload)[idx];
 
-        switch (state) {
-            case LOOKING_FOR_SOH:
-                if (c == SOH)
-                    state = WAITING_FOR_FIRST_1_AFTER_SOH;
-                break;
-            case WAITING_FOR_FIRST_1_AFTER_SOH:
-                if (c == '1') {
-                    state = WAITING_FOR_SECOND_1_AFTER_SOH;
-                } else {
-                    state = LOOKING_FOR_SOH;
-                }
-                break;
-            case WAITING_FOR_SECOND_1_AFTER_SOH:
-                if (c == '1') {
-                    state = WAITING_FOR_EQUALS_AFTER_TAG11;
-                } else {
-                    state = LOOKING_FOR_SOH;
-                }
-                break;
-            case WAITING_FOR_EQUALS_AFTER_TAG11:
-                if (c == '=') {
-                    state = READING_TAG11_VALUE;
-                    req.ts_ns = bpf_ktime_get_ns();
-                    req_len = 0;
-                } else {
-                    state = LOOKING_FOR_SOH;
-                }
-                break;
-            case READING_TAG11_VALUE:
-                if (c == SOH) {
-                    if (req_len > 0) {
-                        req.len = req_len;
-                        bpf_map_push_elem(&pending_q, &req, 0);
-                        stat_inc(&st->inbound_total);
-                    }
-                    state = LOOKING_FOR_SOH;
-                } else if (req_len < FIXLAT_MAX_TAGVAL_LEN) {
-                    req.tag[req_len++] = c;
-                }
-                break;
+        if (!reading) {
+            win = (win >> 8) | ((uint32_t)c << 24);
+            if (win == TAG11) {
+                reading = true;
+                req.ts_ns = bpf_ktime_get_ns();
+                req_len = 0;
+            }
+            continue;
         }
+
+        if (c == SOH) {
+            if (req_len > 0) {
+                req.len = req_len;
+                (void)bpf_map_push_elem(&pending_q, &req, 0);
+                //TODO:if (st) st->inbound_total++;
+                
+                if (tag11_count++ >= MAX_TAG11_PER_PKT) {
+                    break;
+                }
+            }
+            reading = false; // malformed, resume scanning
+            win = 0;
+        } else if (req_len < FIXLAT_MAX_TAGVAL_LEN) {
+            req.tag[req_len++] = c;
+        }
+
     }
     return TC_ACT_OK;
 }
