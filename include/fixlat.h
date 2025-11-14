@@ -5,12 +5,8 @@
 #include <linux/types.h>
 #endif
 
-#define FIXLAT_MAX_TAGVAL_LEN 32
+#define FIXLAT_MAX_TAGVAL_LEN 24
 
-enum fixlat_dir {
-    DIR_INBOUND = 0,
-    DIR_OUTBOUND = 1,
-};
 
 struct pending_req {
     __u64 ts_ns;

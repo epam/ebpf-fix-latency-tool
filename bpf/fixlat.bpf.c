@@ -8,8 +8,8 @@
 #define TC_ACT_OK   0
 /* ASCII control characters */
 #define SOH         0x01  /* Start of Header */
-/* Maximum payload size: MTU (1500) + some headroom for jumbo frames */
-#define MAX_PAYLOAD_SIZE 2000
+/* Maximum payload scan size - reduced for verifier complexity */
+#define MAX_PAYLOAD_SCAN 256
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -70,64 +70,153 @@ static __always_inline void hist_add(__u64 delta_ns) {
     if (slot) __sync_fetch_and_add(slot, 1);
 }
 
-static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir)
+// Common packet parsing - extract as __noinline to share code between ingress/egress
+// Returns payload pointer or NULL if packet should be ignored
+static __noinline unsigned char* parse_packet_headers(
+    struct __sk_buff *skb,
+    struct fixlat_stats *st,
+    unsigned char **payload_end_out)
 {
-    __u32 z=0;
-    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
-    if (st) stat_inc(&st->total_packets);
-
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
 
     struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
+    if ((void *)(eth + 1) > data_end) return NULL;
     if (bpf_ntohs(eth->h_proto) != ETH_P_IP) {
         if (st) stat_inc(&st->non_eth_ip);
-        return TC_ACT_OK;
+        return NULL;
     }
 
     struct iphdr *ip = (void *)(eth + 1);
-    if ((void *)(ip + 1) > data_end) return TC_ACT_OK;
+    if ((void *)(ip + 1) > data_end) return NULL;
     if (ip->protocol != IPPROTO_TCP) {
         if (st) stat_inc(&st->non_tcp);
-        return TC_ACT_OK;
+        return NULL;
     }
     __u32 ihl = ip->ihl * 4;
 
     struct tcphdr *tcp = (void *)ip + ihl;
-    if ((void *)(tcp + 1) > data_end) return TC_ACT_OK;
+    if ((void *)(tcp + 1) > data_end) return NULL;
     __u32 doff = tcp->doff * 4;
 
+    __u32 z = 0;
     struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
-    if (!cfg) return TC_ACT_OK;
+    if (!cfg) return NULL;
 
     // Bidirectional TCP port filter (0 = any)
-    __u16 sport = bpf_ntohs(tcp->source);
-    __u16 dport = bpf_ntohs(tcp->dest);
     if (cfg->watch_port != 0) {
+        __u16 sport = bpf_ntohs(tcp->source);
+        __u16 dport = bpf_ntohs(tcp->dest);
         if (!(sport == cfg->watch_port || dport == cfg->watch_port))
-            return TC_ACT_OK; // ignore
+            return NULL;
     }
 
     unsigned char *payload = (void *)tcp + doff;
     if (payload >= (unsigned char *)data_end) {
         if (st) stat_inc(&st->empty_payload);
-        return TC_ACT_OK;
+        return NULL;
     }
+
+    *payload_end_out = (unsigned char *)data_end;
+    return payload;
+}
+
+// INGRESS: Simple path - just extract Tag 11 and push to queue
+static __always_inline int handle_ingress(struct __sk_buff *skb)
+{
+    __u32 z = 0;
+    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+    if (st) stat_inc(&st->total_packets);
+
+    unsigned char *payload_end;
+    unsigned char *payload = parse_packet_headers(skb, st, &payload_end);
+    if (!payload) return TC_ACT_OK;
 
     // Process every character in the payload
     unsigned char *cursor = payload;
-    unsigned char *payload_end = (unsigned char *)data_end;
+
+    int state = LOOKING_FOR_SOH;
+    struct pending_req req;
+    req.len = 0;
+
+    #pragma clang loop unroll(disable)
+    for (int i = 0; i < MAX_PAYLOAD_SCAN; i++) {
+        if (cursor >= payload_end)
+            break;
+
+        unsigned char c = *cursor++;
+
+        switch (state) {
+            case LOOKING_FOR_SOH:
+                if (c == SOH)
+                    state = WAITING_FOR_FIRST_1_AFTER_SOH;
+                break;
+            case WAITING_FOR_FIRST_1_AFTER_SOH:
+                if (c == '1') {
+                    state = WAITING_FOR_SECOND_1_AFTER_SOH;
+                } else {
+                    state = LOOKING_FOR_SOH;
+                }
+                break;
+            case WAITING_FOR_SECOND_1_AFTER_SOH:
+                if (c == '1') {
+                    state = WAITING_FOR_EQUALS_AFTER_TAG11;
+                } else {
+                    state = LOOKING_FOR_SOH;
+                }
+                break;
+            case WAITING_FOR_EQUALS_AFTER_TAG11:
+                if (c == '=') {
+                    state = READING_TAG11_VALUE;
+                    req.ts_ns = bpf_ktime_get_ns();
+                    req.len = 0;
+                } else {
+                    state = LOOKING_FOR_SOH;
+                }
+                break;
+            case READING_TAG11_VALUE:
+                if (c == SOH) {
+                    state = FINISHED_PARSING_TAG11_VALUE;
+                } else if (req.len < FIXLAT_MAX_TAGVAL_LEN) {
+                    req.tag[req.len++] = c;
+                }
+                break;
+        }
+
+        if (state == FINISHED_PARSING_TAG11_VALUE) {
+            if (req.len > 0) {
+                bpf_map_push_elem(&pending_q, &req, 0);
+                stat_inc(&st->inbound_total);
+            }
+            state = LOOKING_FOR_SOH;
+        }
+    }
+    return TC_ACT_OK;
+}
+
+// EGRESS: Complex path - extract Tag 11 and match with queue
+static __always_inline int handle_egress(struct __sk_buff *skb)
+{
+    __u32 z = 0;
+    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+    if (st) stat_inc(&st->total_packets);
+
+    unsigned char *payload_end;
+    unsigned char *payload = parse_packet_headers(skb, st, &payload_end);
+    if (!payload) return TC_ACT_OK;
+
+    // Process every character in the payload
+    unsigned char *cursor = payload;
 
     int state = LOOKING_FOR_SOH;
     __u8 tlen = 0;
-    unsigned char *tag11_start = NULL;  // Pointer to start of tag 11 value
+    unsigned char *tag11_start = NULL;
 
     #pragma clang loop unroll(disable)
-    for (int i = 0; i < MAX_PAYLOAD_SIZE; i++) {
+    for (int i = 0; i < MAX_PAYLOAD_SCAN; i++) {
         if (cursor >= payload_end)
             break;
-        
+
         unsigned char c = *cursor++;
 
         switch (state) {
@@ -153,7 +242,7 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
                 if (c == '=') {
                     state = READING_TAG11_VALUE;
                     tlen = 0;
-                    tag11_start = cursor;  // cursor points to the character after '='
+                    tag11_start = cursor;
                 } else {
                     state = LOOKING_FOR_SOH;
                 }
@@ -161,57 +250,45 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
             case READING_TAG11_VALUE:
                 if (c == SOH) {
                     state = FINISHED_PARSING_TAG11_VALUE;
-                } else if (tlen < FIXLAT_MAX_TAGVAL_LEN) { 
-                    tlen++;  // Just track length, don't copy
+                } else if (tlen < FIXLAT_MAX_TAGVAL_LEN) {
+                    tlen++;
                 }
                 break;
         }
 
         if (state == FINISHED_PARSING_TAG11_VALUE) {
             if (tlen > 0 && tag11_start != NULL) {
-                if (dir == DIR_INBOUND) {
-                    struct pending_req req = {.ts_ns=bpf_ktime_get_ns(), .len=tlen};
-                    // Copy directly from packet buffer to req.tag
-                    #pragma clang loop unroll(disable)
-                    for (int i=0; i<FIXLAT_MAX_TAGVAL_LEN && i<tlen; i++) {
-                        if (tag11_start + i < payload_end) {
-                            req.tag[i] = tag11_start[i];
-                        }
-                    }
-                    bpf_map_push_elem(&pending_q, &req, 0);
-                    stat_inc(&st->inbound_total);
-                } else {
-                    bool matched = false;
-                    struct pending_req head;
-                    if (bpf_map_peek_elem(&pending_q, &head) == 0) {
-                        bool eq = (head.len == tlen);
-                        if (eq) {
-                            // Compare directly from packet buffer with head.tag
-                            #pragma clang loop unroll(disable)
-                            for (int i=0; i<tlen && i<FIXLAT_MAX_TAGVAL_LEN; i++) {
-                                if (tag11_start + i >= payload_end) {
-                                    eq = false;
-                                    break;
-                                }
-                                if (head.tag[i] != tag11_start[i]) {
-                                    eq = false;
-                                    break;
-                                }
+                // EGRESS: Match with queue and measure latency
+                bool matched = false;
+                struct pending_req head;
+                if (bpf_map_peek_elem(&pending_q, &head) == 0) {
+                    bool eq = (head.len == tlen);
+                    if (eq) {
+                        #pragma clang loop unroll(disable)
+                        for (int i=0; i<tlen && i<FIXLAT_MAX_TAGVAL_LEN; i++) {
+                            if (tag11_start + i >= payload_end) {
+                                eq = false;
+                                break;
+                            }
+                            if (head.tag[i] != tag11_start[i]) {
+                                eq = false;
+                                break;
                             }
                         }
-        
-                        if (eq && bpf_map_pop_elem(&pending_q, &head) == 0) {
-                            __u64 now = bpf_ktime_get_ns();
-                            hist_add(now - head.ts_ns);
-                            matched = true;
-                        }
                     }
-        
-                    if (!matched) {
-                        stat_inc(&st->unmatched_outbound);
+
+                    if (eq && bpf_map_pop_elem(&pending_q, &head) == 0) {
+                        __u64 now = bpf_ktime_get_ns();
+                        hist_add(now - head.ts_ns);
+                        matched = true;
                     }
-                    stat_inc(&st->outbound_total);
                 }
+
+                if (!matched) {
+                    stat_inc(&st->unmatched_outbound);
+                }
+                stat_inc(&st->outbound_total);
+
                 tlen = 0;
                 tag11_start = NULL;
             }
@@ -222,7 +299,7 @@ static __always_inline int handle_skb(struct __sk_buff *skb, enum fixlat_dir dir
 }
 
 SEC("tc")
-int tc_ingress(struct __sk_buff *skb){ return handle_skb(skb, DIR_INBOUND); }
+int tc_ingress(struct __sk_buff *skb){ return handle_ingress(skb); }
 
 SEC("tc")
-int tc_egress(struct __sk_buff *skb){ return handle_skb(skb, DIR_OUTBOUND); }
+int tc_egress(struct __sk_buff *skb){ return handle_egress(skb); }
