@@ -139,8 +139,10 @@ int main(int argc, char **argv)
         snapshot_and_reset(fd_hist, fd_stats);
     }
 
-    bpf_tc_detach(&ing, &ing_o); bpf_tc_detach(&egr, &egr_o);
-    bpf_tc_hook_destroy(&ing); bpf_tc_hook_destroy(&egr);
+    bpf_tc_detach(&ing, &ing_o); 
+    //bpf_tc_detach(&egr, &egr_o);
+    bpf_tc_hook_destroy(&ing); 
+    //bpf_tc_hook_destroy(&egr);
     fixlat_bpf__destroy(skel);
     return 0;
 }
