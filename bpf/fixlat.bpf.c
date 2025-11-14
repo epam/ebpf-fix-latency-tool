@@ -140,10 +140,9 @@ static __always_inline int handle_ingress(struct __sk_buff *skb)
     __builtin_memset(&req, 0, sizeof(req));
     __u8 req_len = 0;
 
-    #pragma clang loop unroll(disable)
-    for (int i = 0; i < MAX_PAYLOAD_SCAN; i++) {
-        if (cursor >= payload_end)
-            break;
+    int i = 0;
+    while (cursor < payload_end && i < MAX_PAYLOAD_SCAN) {
+        i++;
 
         unsigned char c = *cursor++;
 
@@ -214,10 +213,9 @@ static __always_inline int handle_egress(struct __sk_buff *skb)
     __u8 tlen = 0;
     unsigned char *tag11_start = NULL;
 
-    #pragma clang loop unroll(disable)
-    for (int i = 0; i < MAX_PAYLOAD_SCAN; i++) {
-        if (cursor >= payload_end)
-            break;
+    int i = 0;
+    while (cursor < payload_end && i < MAX_PAYLOAD_SCAN) {
+        i++;
 
         unsigned char c = *cursor++;
 
