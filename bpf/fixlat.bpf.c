@@ -137,7 +137,8 @@ static __always_inline int handle_ingress(struct __sk_buff *skb)
 
     int state = LOOKING_FOR_SOH;
     struct pending_req req;
-    req.len = 0;
+    __builtin_memset(&req, 0, sizeof(req));
+    __u8 req_len = 0;
 
     #pragma clang loop unroll(disable)
     for (int i = 0; i < MAX_PAYLOAD_SCAN; i++) {
@@ -169,7 +170,7 @@ static __always_inline int handle_ingress(struct __sk_buff *skb)
                 if (c == '=') {
                     state = READING_TAG11_VALUE;
                     req.ts_ns = bpf_ktime_get_ns();
-                    req.len = 0;
+                    req_len = 0;
                 } else {
                     state = LOOKING_FOR_SOH;
                 }
@@ -177,14 +178,15 @@ static __always_inline int handle_ingress(struct __sk_buff *skb)
             case READING_TAG11_VALUE:
                 if (c == SOH) {
                     state = FINISHED_PARSING_TAG11_VALUE;
-                } else if (req.len < FIXLAT_MAX_TAGVAL_LEN) {
-                    req.tag[req.len++] = c;
+                } else if (req_len < FIXLAT_MAX_TAGVAL_LEN) {
+                    req.tag[req_len++] = c;
                 }
                 break;
         }
 
         if (state == FINISHED_PARSING_TAG11_VALUE) {
-            if (req.len > 0) {
+            if (req_len > 0) {
+                req.len = req_len;
                 bpf_map_push_elem(&pending_q, &req, 0);
                 stat_inc(&st->inbound_total);
             }
