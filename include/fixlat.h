@@ -11,7 +11,7 @@
 struct pending_req {
     __u64 ts_ns;
     __u8  len;
-    char  tag[FIXLAT_MAX_TAGVAL_LEN];
+    char  ord_id[FIXLAT_MAX_TAGVAL_LEN];
 };
 
 struct fixlat_stats {
