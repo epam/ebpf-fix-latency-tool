@@ -244,12 +244,10 @@ static int handle_tag_parser(struct __sk_buff *skb)
     unsigned char *cursor = (unsigned char *)data + start_offset;
     unsigned char *scan_end = (unsigned char *)data_end;
 
-    /* Validate cursor is within packet bounds */
     if (cursor >= scan_end)
         return TC_ACT_OK;
 
-    /* Limit scan size for verifier */
-    __u32 max_scan = (scan_end - cursor);
+    __u16 max_scan = (scan_end - cursor);
     if (max_scan > MAX_PAYLOAD_SCAN)
         max_scan = MAX_PAYLOAD_SCAN;
 
