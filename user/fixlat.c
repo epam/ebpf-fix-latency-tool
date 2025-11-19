@@ -115,15 +115,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Set up prog_array for tail calls */
-    int prog_array_fd = bpf_map__fd(skel->maps.prog_array);
-    int tag_parser_fd = bpf_program__fd(skel->progs.tc_tag_parser);
-    __u32 prog_idx = 0; // PROG_TAG_PARSER index
-    if (bpf_map_update_elem(prog_array_fd, &prog_idx, &tag_parser_fd, BPF_ANY) != 0) {
-        fprintf(stderr, "Failed to setup prog_array for tail calls: %s\n", strerror(errno));
-        return 1;
-    }
-
     int ifindex = if_nametoindex(iface);
     if (!ifindex){ fprintf(stderr,"unknown iface %s\n", iface); return 1; }
     DECLARE_LIBBPF_OPTS(bpf_tc_hook, ing, .ifindex=ifindex, .attach_point=BPF_TC_INGRESS);
