@@ -244,6 +244,10 @@ static int handle_tag_parser(struct __sk_buff *skb)
     unsigned char *cursor = (unsigned char *)data + start_offset;
     unsigned char *scan_end = (unsigned char *)data_end;
 
+    /* Validate cursor is within packet bounds */
+    if (cursor >= scan_end)
+        return TC_ACT_OK;
+
     /* Limit scan size for verifier */
     __u32 max_scan = (scan_end - cursor);
     if (max_scan > MAX_PAYLOAD_SCAN)
@@ -258,6 +262,9 @@ static int handle_tag_parser(struct __sk_buff *skb)
 
     #pragma clang loop unroll(disable)
     for (int i = 0; i < max_scan; i++) {
+        if (cursor + i >= scan_end)
+            break;
+
         unsigned char c = cursor[i];
 
         if (copy_state) {
@@ -265,7 +272,7 @@ static int handle_tag_parser(struct __sk_buff *skb)
                 /* Found end of tag value */
                 if (ord_id_len > 0) {
                     req.len = ord_id_len;
-                    bpf_map_push_elem(&pending_q, &req, 0);
+                    //bpf_map_push_elem(&pending_q, &req, 0);
 
                     if (++tags_found >= MAX_TAG11_PER_PKT)
                         break;
