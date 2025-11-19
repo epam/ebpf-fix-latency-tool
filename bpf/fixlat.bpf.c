@@ -170,7 +170,6 @@ static int handle_ingress(struct __sk_buff *skb)
     /* FIX message detected - scan for tag 11 */
     __u32 win = 0;
     bool copy_state = false;
-    __u8 ord_id_len = 0;
     struct pending_req req = {};
 
     while (ptr < end) {
@@ -180,24 +179,22 @@ static int handle_ingress(struct __sk_buff *skb)
         if (copy_state) {
             if (c == SOH) {
                 /* Found end of tag value */
-                if (ord_id_len > 0) {
-                    req.len = ord_id_len;
+                if (req.len > 0) {
                     bpf_map_push_elem(&pending_q, &req, 0);
                 }
 
                 /* Reset for next tag */
                 copy_state = false;
-                ord_id_len = 0;
                 win = SOH;
-            } else if (ord_id_len < FIXLAT_MAX_TAGVAL_LEN) {
-                req.ord_id[ord_id_len++] = c; // copy as we scan
+            } else if (req.len < FIXLAT_MAX_TAGVAL_LEN) {
+                req.ord_id[req.len++] = c; // copy as we scan
             }
         } else {
             /* Scan for TAG11 pattern */
             win = (win << 8) | c;
             if (win == TAG11) {
                 copy_state = true;
-                ord_id_len = 0;
+                req.len = 0;
             }
         }
     }
