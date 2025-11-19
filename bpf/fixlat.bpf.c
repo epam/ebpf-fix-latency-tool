@@ -41,8 +41,32 @@ struct {
     __type(value, struct fixlat_stats);
 } stats_map SEC(".maps");
 
+/* Tail call program array */
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, 2);
+    __type(key, __u32);
+    __type(value, __u32);
+} prog_array SEC(".maps");
 
-static const __u32 TAG11 = ((__u32)SOH << 24) | ((__u32)'1' << 16) | ((__u32)'1' << 8) | ((__u32)'='); 
+/* Tail call program indices */
+#define PROG_TAG_PARSER 0
+#define MAX_TAIL_CALLS 32
+
+
+static const __u32 TAG11 = ((__u32)SOH << 24) | ((__u32)'1' << 16) | ((__u32)'1' << 8) | ((__u32)'=');
+
+/* FIX protocol starts with "8=FI" - we check first 3 bytes */
+#define FIX_MAGIC_8  0x38   // '8'
+#define FIX_MAGIC_EQ 0x3D   // '='
+#define FIX_MAGIC_F  0x46   // 'F'
+#define FIX_MAGIC_I  0x49   // 'I'
+
+/* State passed via __sk_buff.cb between tail calls */
+struct parser_state {
+    __u32 offset;           /* Current offset in packet to scan from */
+    __u32 remaining_calls;  /* Remaining tail call iterations */
+};
 
 static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
 
@@ -116,72 +140,169 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 
 
 
-// INGRESS: Simple path - just extract Tag 11 and push to queue
-static int handle_ingress(struct __sk_buff *skb)
+/* Helper to save parser state in __sk_buff.cb */
+static __always_inline void save_state(struct __sk_buff *skb, __u32 offset, __u32 remaining)
 {
-    void *data     = (void *)(long)skb->data;
+    skb->cb[0] = offset;
+    skb->cb[1] = remaining;
+}
+
+/* Helper to load parser state from __sk_buff.cb */
+static __always_inline void load_state(struct __sk_buff *skb, __u32 *offset, __u32 *remaining)
+{
+    *offset = skb->cb[0];
+    *remaining = skb->cb[1];
+}
+
+/* HOOK 1: Filter and FIX protocol detection
+ * - Parse TCP/IP headers to find payload
+ * - Check if payload starts with "8=FI" (FIX protocol)
+ * - Skip TCP ACKs and other non-data packets
+ * - Tail call to tag parser if FIX message detected
+ */
+static int handle_filter(struct __sk_buff *skb)
+{
+    void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
 
-    if (!data) return TC_ACT_OK;
+    /* Parse Ethernet header */
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return TC_ACT_OK;
 
-    
+    if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
+        return TC_ACT_OK;
+
+    /* Parse IP header */
+    struct iphdr *ip = (void *)(eth + 1);
+    if ((void *)(ip + 1) > data_end)
+        return TC_ACT_OK;
+
+    if (ip->protocol != IPPROTO_TCP)
+        return TC_ACT_OK;
+
+    __u32 ip_hdr_len = ip->ihl * 4;
+    if (ip_hdr_len < 20)
+        return TC_ACT_OK;
+
+    /* Parse TCP header */
+    struct tcphdr *tcp = (void *)ip + ip_hdr_len;
+    if ((void *)(tcp + 1) > data_end)
+        return TC_ACT_OK;
+
+    __u32 tcp_hdr_len = tcp->doff * 4;
+    if (tcp_hdr_len < 20)
+        return TC_ACT_OK;
+
+    /* Calculate payload offset and pointer */
+    __u32 payload_offset = sizeof(struct ethhdr) + ip_hdr_len + tcp_hdr_len;
+    unsigned char *payload = (void *)tcp + tcp_hdr_len;
+
+    /* Check if we have at least 4 bytes of payload for "8=FI" check */
+    if (payload + 4 > (unsigned char *)data_end)
+        return TC_ACT_OK;
+
+    /* Skip TCP ACK-only packets (no payload or very small) */
+    __u32 payload_len = (unsigned char *)data_end - payload;
+    if (payload_len < 4)
+        return TC_ACT_OK;
+
+    /* Check for FIX protocol signature: "8=FI" (at least first 3 bytes) */
+    if (payload[0] != FIX_MAGIC_8 ||
+        payload[1] != FIX_MAGIC_EQ ||
+        payload[2] != FIX_MAGIC_F)
+        return TC_ACT_OK;
+
+    /* FIX message detected! Set up state for tag parser */
+    save_state(skb, payload_offset, MAX_TAIL_CALLS);
+
+    /* Tail call to tag parser */
+    bpf_tail_call(skb, &prog_array, PROG_TAG_PARSER);
+
+    /* If tail call fails, just return OK */
+    return TC_ACT_OK;
+}
+
+/* HOOK 2: Tag 11 parser with recursive tail calling
+ * - Scans for tag 11 from current offset
+ * - Extracts values and pushes to pending_q
+ * - Tail calls itself if more data to scan and iterations left
+ */
+static int handle_tag_parser(struct __sk_buff *skb)
+{
+    void *data = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
+
+    /* Load state from cb */
+    __u32 start_offset = 0;
+    __u32 remaining_calls = 0;
+    load_state(skb, &start_offset, &remaining_calls);
+
+    if (remaining_calls == 0)
+        return TC_ACT_OK;
+
+    unsigned char *cursor = (unsigned char *)data + start_offset;
+    unsigned char *scan_end = (unsigned char *)data_end;
+
+    /* Limit scan size for verifier */
+    __u32 max_scan = (scan_end - cursor);
+    if (max_scan > MAX_PAYLOAD_SCAN)
+        max_scan = MAX_PAYLOAD_SCAN;
+
     __u32 win = 0;
+    bool copy_state = false;
     __u8 ord_id_len = 0;
-    bool copy_state = false;       
-    
+    __u16 tag_start_offset = 0;
 
-    unsigned char *payload = data;
-
-    __u16 offs [MAX_TAG11_PER_PKT];
-    __u16 lens [MAX_TAG11_PER_PKT];
-    __u8 values_found = 0;
-
-
-    int max = (int) (data_end - data);
-    if (max > MAX_PAYLOAD_SCAN)
-        max = MAX_PAYLOAD_SCAN;
+    struct pending_req req = {};
+    __u8 tags_found = 0;
 
     #pragma clang loop unroll(disable)
-    for (int i=0; i < max; i++) {
-        unsigned char c = payload[i];
+    for (int i = 0; i < max_scan; i++) {
+        if (cursor + i >= scan_end)
+            break;
+
+        unsigned char c = cursor[i];
+
         if (copy_state) {
             if (c == SOH) {
-                // if (ord_id_len > 0) {     
-                //     //req.len = ord_id_len;
-                //     //bpf_map_push_elem(&pending_q, &req, 0);
-                // }
-                lens[values_found] = ord_id_len;
-                copy_state = false; 
-                win = SOH;
+                /* Found end of tag value */
+                if (ord_id_len > 0 && ord_id_len <= FIXLAT_MAX_TAGVAL_LEN) {
+                    req.len = ord_id_len;
+                    /* Load the tag value from packet */
+                    ////bpf_skb_load_bytes(skb, tag_start_offset, req.ord_id, ord_id_len);
+                    ////bpf_map_push_elem(&pending_q, &req, 0);
 
-                if (++values_found == MAX_TAG11_PER_PKT)
-                    break;
-            // } else {       
-                // if (ord_id_len <= FIXLAT_MAX_TAGVAL_LEN) {
-                //     req.ord_id[ord_id_len++] = c;
-                // }
+                    tags_found++;
+                    if (tags_found >= MAX_TAG11_PER_PKT)
+                        break;
+                }
+
+                copy_state = false;
+                ord_id_len = 0;
+                win = SOH;
+            } else {
+                /* Accumulate length of tag value */
+                if (ord_id_len <= FIXLAT_MAX_TAGVAL_LEN)
+                    ord_id_len++;
             }
         } else {
+            /* Scan for TAG11 pattern */
             win = (win << 8) | c;
             if (win == TAG11) {
                 copy_state = true;
                 ord_id_len = 0;
-                offs[values_found] = i;
+                tag_start_offset = start_offset + i + 1; /* +1 to skip '=' */
             }
         }
     }
 
-    struct pending_req req = {};
-    #pragma clang loop unroll(disable)
-    for (int i=0; i < values_found; i++) {
-        __u8 len = lens[i];
-        if (len <= FIXLAT_MAX_TAGVAL_LEN) {
-            req.len = len;
-            bpf_skb_load_bytes(skb, offs[i], req.ord_id, len);
-            bpf_map_push_elem(&pending_q, &req, 0);
-        }
-    } 
-
+    /* If we scanned max and still have iterations left, tail call again */
+    if (max_scan == MAX_PAYLOAD_SCAN && remaining_calls > 1) {
+        __u32 new_offset = start_offset + max_scan;
+        save_state(skb, new_offset, remaining_calls - 1);
+        bpf_tail_call(skb, &prog_array, PROG_TAG_PARSER);
+    }
 
     return TC_ACT_OK;
 }
@@ -353,8 +474,19 @@ static int handle_ingress(struct __sk_buff *skb)
 //     return TC_ACT_OK;
 // }
 
+/* Main entry point - filter and FIX detection */
 SEC("tc")
-int tc_ingress(struct __sk_buff *skb){ return handle_ingress(skb); }
+int tc_ingress(struct __sk_buff *skb)
+{
+    return handle_filter(skb);
+}
+
+/* Tag parser - called via tail call */
+SEC("tc")
+int tc_tag_parser(struct __sk_buff *skb)
+{
+    return handle_tag_parser(skb);
+}
 
 // SEC("tc")
 // int tc_egress(struct __sk_buff *skb){ return handle_egress(skb); }
