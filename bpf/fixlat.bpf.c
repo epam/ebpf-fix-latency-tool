@@ -252,7 +252,6 @@ static int handle_tag_parser(struct __sk_buff *skb)
     __u32 win = 0;
     bool copy_state = false;
     __u8 ord_id_len = 0;
-    __u16 tag_start_offset = 0;
 
     struct pending_req req = {};
     __u8 tags_found = 0;
@@ -269,22 +268,23 @@ static int handle_tag_parser(struct __sk_buff *skb)
                 /* Found end of tag value */
                 if (ord_id_len > 0 && ord_id_len <= FIXLAT_MAX_TAGVAL_LEN) {
                     req.len = ord_id_len;
-                    /* Load the tag value from packet */
-                    ////bpf_skb_load_bytes(skb, tag_start_offset, req.ord_id, ord_id_len);
-                    ////bpf_map_push_elem(&pending_q, &req, 0);
+                    bpf_map_push_elem(&pending_q, &req, 0);
 
                     tags_found++;
                     if (tags_found >= MAX_TAG11_PER_PKT)
                         break;
                 }
 
+                /* Reset for next tag */
                 copy_state = false;
                 ord_id_len = 0;
                 win = SOH;
             } else {
-                /* Accumulate length of tag value */
-                if (ord_id_len <= FIXLAT_MAX_TAGVAL_LEN)
+                /* Copy character to req.ord_id as we scan */
+                if (ord_id_len < FIXLAT_MAX_TAGVAL_LEN) {
+                    req.ord_id[ord_id_len] = c;
                     ord_id_len++;
+                }
             }
         } else {
             /* Scan for TAG11 pattern */
@@ -292,7 +292,6 @@ static int handle_tag_parser(struct __sk_buff *skb)
             if (win == TAG11) {
                 copy_state = true;
                 ord_id_len = 0;
-                tag_start_offset = start_offset + i + 1; /* +1 to skip '=' */
             }
         }
     }
