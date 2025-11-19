@@ -258,20 +258,16 @@ static int handle_tag_parser(struct __sk_buff *skb)
 
     #pragma clang loop unroll(disable)
     for (int i = 0; i < max_scan; i++) {
-        if (cursor + i >= scan_end)
-            break;
-
         unsigned char c = cursor[i];
 
         if (copy_state) {
             if (c == SOH) {
                 /* Found end of tag value */
-                if (ord_id_len > 0 && ord_id_len <= FIXLAT_MAX_TAGVAL_LEN) {
+                if (ord_id_len > 0) {
                     req.len = ord_id_len;
                     bpf_map_push_elem(&pending_q, &req, 0);
 
-                    tags_found++;
-                    if (tags_found >= MAX_TAG11_PER_PKT)
+                    if (++tags_found >= MAX_TAG11_PER_PKT)
                         break;
                 }
 
@@ -279,12 +275,9 @@ static int handle_tag_parser(struct __sk_buff *skb)
                 copy_state = false;
                 ord_id_len = 0;
                 win = SOH;
-            } else {
+            } else if (ord_id_len < FIXLAT_MAX_TAGVAL_LEN) {
                 /* Copy character to req.ord_id as we scan */
-                if (ord_id_len < FIXLAT_MAX_TAGVAL_LEN) {
-                    req.ord_id[ord_id_len] = c;
-                    ord_id_len++;
-                }
+                req.ord_id[ord_id_len++] = c;
             }
         } else {
             /* Scan for TAG11 pattern */
