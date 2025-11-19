@@ -272,7 +272,7 @@ static int handle_tag_parser(struct __sk_buff *skb)
                 /* Found end of tag value */
                 if (ord_id_len > 0) {
                     req.len = ord_id_len;
-                    //bpf_map_push_elem(&pending_q, &req, 0);
+                    bpf_map_push_elem(&pending_q, &req, 0);
 
                     if (++tags_found >= MAX_TAG11_PER_PKT)
                         break;

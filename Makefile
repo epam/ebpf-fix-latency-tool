@@ -10,8 +10,13 @@ VMLINUX   := bpf/vmlinux.h
 BPFOBJ    := bpf/fixlat.bpf.o
 SKEL      := bpf/fixlat.skel.h
 USEROBJ   := user/fixlat
+TESTOBJ   := test/test_parser
 
 all: $(USEROBJ)
+
+test: $(TESTOBJ)
+	@echo "Running tests..."
+	@sudo $(TESTOBJ)
 
 $(VMLINUX):
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $@
@@ -26,7 +31,10 @@ $(SKEL): $(BPFOBJ)
 $(USEROBJ): user/fixlat.c $(SKEL)
 	$(CC) $(CFLAGS) -Ibpf -Iinclude user/fixlat.c -o $@ $(PKG)
 
-clean:
-	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ)
+$(TESTOBJ): test/test_parser.c $(SKEL)
+	$(CC) $(CFLAGS) -Ibpf -Iinclude test/test_parser.c -o $@ $(PKG)
 
-.PHONY: all clean
+clean:
+	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(TESTOBJ)
+
+.PHONY: all test clean
