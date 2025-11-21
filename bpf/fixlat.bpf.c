@@ -168,33 +168,61 @@ static int handle_ingress(struct __sk_buff *skb)
         return TC_ACT_OK;
 
     /* FIX message detected - scan for tag 11 */
-    __u32 win = 0;
-    bool copy_state = false;
-    struct pending_req req = {};
+    /* First pass: find offsets and lengths of up to 8 tag 11 values */
+    __u16 tag11_offsets[8];
+    __u8 tag11_lengths[8];
+    __u8 tag11_count = 0;
 
+    __u32 win = 0;
+    bool in_tag11_value = false;
+    __u16 value_start_offset = 0;
+    __u8 value_len = 0;
+
+    #pragma clang loop unroll(disable)
     while (ptr < end) {
         unsigned char c = *ptr;
         ptr++;
 
-        if (copy_state) {
+        if (in_tag11_value) {
             if (c == SOH) {
-                /* Found end of tag value */
-                if (req.len > 0) {
-                    bpf_map_push_elem(&pending_q, &req, 0);
-                }
-
+                /* Found end of tag 11 value */
+                tag11_offsets[tag11_count] = value_start_offset;
+                tag11_lengths[tag11_count] = value_len;
+                tag11_count++;
                 /* Reset for next tag */
-                copy_state = false;
+                in_tag11_value = false;
                 win = SOH;
-            } else if (req.len < FIXLAT_MAX_TAGVAL_LEN) {
-                req.ord_id[req.len++] = c; // copy as we scan
+            } else { 
+                value_len++;
             }
         } else {
             /* Scan for TAG11 pattern */
             win = (win << 8) | c;
             if (win == TAG11) {
-                copy_state = true;
-                req.len = 0;
+                in_tag11_value = true;
+                value_start_offset = (__u16)(ptr - (unsigned char *)data);
+                value_len = 0;
+            }
+        }
+
+        if (tag11_count == 8)
+            break;
+    }
+
+    /* Second pass: extract actual values using bpf_skb_load_bytes */
+    #pragma clang loop unroll(disable)
+    for (int i = 0; i < 8; i++) {
+        if (i >= tag11_count)
+            break;
+
+        struct pending_req req = {};
+        __u16 offset = tag11_offsets[i];
+        __u8 len = tag11_lengths[i];
+
+        if (len > 0 && len < FIXLAT_MAX_TAGVAL_LEN) {
+            if (bpf_skb_load_bytes(skb, offset, req.ord_id, len) == 0) {
+                req.len = len;
+                bpf_map_push_elem(&pending_q, &req, 0);
             }
         }
     }
