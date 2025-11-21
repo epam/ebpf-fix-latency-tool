@@ -41,11 +41,8 @@ struct {
 
 static const __u32 TAG11 = ((__u32)SOH << 24) | ((__u32)'1' << 16) | ((__u32)'1' << 8) | ((__u32)'=');
 
-/* FIX protocol starts with "8=FI" - we check first 3 bytes */
-#define FIX_MAGIC_8  0x38   // '8'
-#define FIX_MAGIC_EQ 0x3D   // '='
-#define FIX_MAGIC_F  0x46   // 'F'
-#define FIX_MAGIC_I  0x49   // 'I'
+/* FIX protocol BeginString tag starts with "8=FI" - as 32-bit for direct memory read (little-endian) */
+static const __u32 FIX_BEGIN_STRING_PREFIX = ((__u32)'8' << 0) | ((__u32)'=' << 8) | ((__u32)'F' << 16) | ((__u32)'I' << 24);
 
 static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
 
@@ -161,52 +158,53 @@ static int handle_ingress(struct __sk_buff *skb)
     if (ptr + 4 > end)
         return TC_ACT_OK;
 
-    /* Check for FIX protocol signature: "8=FI" */
-    if (ptr[0] != FIX_MAGIC_8 ||
-        ptr[1] != FIX_MAGIC_EQ ||
-        ptr[2] != FIX_MAGIC_F)
+    /* Check for FIX protocol signature: "8=FI" as single 32-bit read */
+    __u32 magic = *(__u32 *)ptr;
+    if (magic != FIX_BEGIN_STRING_PREFIX)
         return TC_ACT_OK;
 
-    /* FIX message detected - scan for tag 11 */
+    /* FIX message detected - skip header (tag 11 never appears in header) */
+    ptr += 16;
+ 
     /* First pass: find offsets and lengths of up to 8 tag 11 values */
     __u16 tag11_offsets[8];
     __u8 tag11_lengths[8];
     __u8 tag11_count = 0;
 
     __u32 win = 0;
-    bool in_tag11_value = false;
     __u16 value_start_offset = 0;
     __u8 value_len = 0;
 
     #pragma clang loop unroll(disable)
     while (ptr < end) {
+        if (tag11_count >= 8)
+            break;
+
         unsigned char c = *ptr;
         ptr++;
 
-        if (in_tag11_value) {
-            if (c == SOH) {
-                /* Found end of tag 11 value */
-                tag11_offsets[tag11_count] = value_start_offset;
-                tag11_lengths[tag11_count] = value_len;
-                tag11_count++;
-                /* Reset for next tag */
-                in_tag11_value = false;
-                win = SOH;
-            } else { 
-                value_len++;
-            }
-        } else {
-            /* Scan for TAG11 pattern */
-            win = (win << 8) | c;
-            if (win == TAG11) {
-                in_tag11_value = true;
-                value_start_offset = (__u16)(ptr - (unsigned char *)data);
-                value_len = 0;
-            }
+        /* Processing tag 11 value */
+        if (value_start_offset > 0 && c == SOH) {
+            /* Found end of tag 11 value */
+            tag11_offsets[tag11_count] = value_start_offset;
+            tag11_lengths[tag11_count] = value_len;
+            tag11_count++;
+            value_start_offset = 0;
+            win = SOH;
+            continue;
         }
 
-        if (tag11_count == 8)
-            break;
+        if (value_start_offset > 0) {
+            value_len++;
+            continue;
+        }
+
+        /* Scanning for TAG11 pattern */
+        win = (win << 8) | c;
+        if (win == TAG11) {
+            value_start_offset = (__u16)(ptr - (unsigned char *)data);
+            value_len = 0;
+        }
     }
 
     /* Second pass: extract actual values using bpf_skb_load_bytes */
