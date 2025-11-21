@@ -157,18 +157,20 @@ static int handle_ingress(struct __sk_buff *skb)
     unsigned char *ptr = (void *)tcp + tcp_hdr_len;
     unsigned char *end = (unsigned char *)data_end;
 
-    /* Need at least 4 bytes for "8=FI" check */
+    /* Need at least 4 bytes for "8=FIX" check */
     if (ptr + 4 > end)
         return TC_ACT_OK;
 
-    /* Check for FIX protocol signature: "8=FI" as single 32-bit read */
+    /* Check for FIX protocol signature: "8=FIX" as single 32-bit read */
     __u32 magic = *(__u32 *)ptr;
     if (magic != FIX_BEGIN_STRING_PREFIX)
         return TC_ACT_OK;
 
     /* FIX message detected - skip header (tag 11 never appears in header) */
     ptr += 16;
- 
+    if (ptr >= end)
+        return TC_ACT_OK;
+
     /* First pass: find offsets and lengths of up to MAX_TAG11_PER_PACKET tag 11 values */
     __u16 tag11_offsets[MAX_TAG11_PER_PACKET];
     __u8 tag11_lengths[MAX_TAG11_PER_PACKET];
