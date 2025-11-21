@@ -219,11 +219,13 @@ static int handle_ingress(struct __sk_buff *skb)
         __u16 offset = tag11_offsets[i];
         __u8 len = tag11_lengths[i];
 
-        if (len > 0 && len < FIXLAT_MAX_TAGVAL_LEN) {
-            if (bpf_skb_load_bytes(skb, offset, req.ord_id, len) == 0) {
-                req.len = len;
-                bpf_map_push_elem(&pending_q, &req, 0);
-            }
+        /* Verifier needs explicit range check */
+        if (len < 1 || len > FIXLAT_MAX_TAGVAL_LEN)
+            continue;
+
+        if (bpf_skb_load_bytes(skb, offset, req.ord_id, len) == 0) {
+            req.len = len;
+            bpf_map_push_elem(&pending_q, &req, 0);
         }
     }
 
