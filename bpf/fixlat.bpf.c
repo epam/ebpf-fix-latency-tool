@@ -44,6 +44,9 @@ static const __u32 TAG11 = ((__u32)SOH << 24) | ((__u32)'1' << 16) | ((__u32)'1'
 /* FIX protocol BeginString tag starts with "8=FI" - as 32-bit for direct memory read (little-endian) */
 static const __u32 FIX_BEGIN_STRING_PREFIX = ((__u32)'8' << 0) | ((__u32)'=' << 8) | ((__u32)'F' << 16) | ((__u32)'I' << 24);
 
+/* Maximum number of tag 11 values to extract per packet */
+#define MAX_TAG11_PER_PACKET 8
+
 static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
 
 // static __always_inline __u32 log2_bucket(__u64 ns) {
@@ -166,9 +169,9 @@ static int handle_ingress(struct __sk_buff *skb)
     /* FIX message detected - skip header (tag 11 never appears in header) */
     ptr += 16;
  
-    /* First pass: find offsets and lengths of up to 8 tag 11 values */
-    __u16 tag11_offsets[8];
-    __u8 tag11_lengths[8];
+    /* First pass: find offsets and lengths of up to MAX_TAG11_PER_PACKET tag 11 values */
+    __u16 tag11_offsets[MAX_TAG11_PER_PACKET];
+    __u8 tag11_lengths[MAX_TAG11_PER_PACKET];
     __u8 tag11_count = 0;
 
     __u32 win = 0;
@@ -177,7 +180,7 @@ static int handle_ingress(struct __sk_buff *skb)
 
     #pragma clang loop unroll(disable)
     while (ptr < end) {
-        if (tag11_count >= 8)
+        if (tag11_count >= MAX_TAG11_PER_PACKET)
             break;
 
         unsigned char c = *ptr;
@@ -209,7 +212,7 @@ static int handle_ingress(struct __sk_buff *skb)
 
     /* Second pass: extract actual values using bpf_skb_load_bytes */
     #pragma clang loop unroll(disable)
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < MAX_TAG11_PER_PACKET; i++) {
         if (i >= tag11_count)
             break;
 
