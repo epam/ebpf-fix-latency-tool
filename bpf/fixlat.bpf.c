@@ -131,14 +131,12 @@ static int handle_ingress(struct __sk_buff *skb)
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end = (__u8 *)(long)skb->data_end;
 
-
+    bool in_tag11 = false;
     struct pending_req *req = 0;
     
-    int tag11_count = 0;
-
     __u32 window = 0;
 
-    int value_len = 0;
+    __u8 value_len = 0;
 
     //#pragma clang loop unroll(disable)
     for (int i = 0; i < FIXLAT_MAX_SCAN; i++) {
@@ -148,28 +146,38 @@ static int handle_ingress(struct __sk_buff *skb)
 
         __u8 c = *p;
 
-        if (req == 0) {
+        if (!in_tag11) {
             window = (window << 8) | c;
-            if (window == TAG11) { // Tag 11 begins <SOH>11=
-                value_len = 0;
-                req = bpf_ringbuf_reserve(&pending_req_rb, sizeof(struct pending_req), 0);
-                if (!req)
-                    break;
-            }
-        } else {
-            if (c == SOH || value_len == FIXLAT_MAX_TAGVAL_LEN) {  // Tag 11 ends
-                req->len = value_len;
-                //req->ts_ns = skb->tstamp;
-                //req->ts_ns = bpf_ktime_get_ns();
+            if (window != TAG11) 
+                continue;
 
-                bpf_ringbuf_submit(req, 0);
-                
-                req = 0;
-                window = SOH;
-            } else {    
-                req->ord_id[value_len++] = c;
-            }
+            // Tag 11 begins <SOH>11=
+            value_len = 0;
+            req = bpf_ringbuf_reserve(&pending_req_rb, sizeof(*req), 0);
+            if (!req)
+                break;
+            
+            in_tag11 = true;
+            continue;
+        }
+        
+        if (c == SOH) {  // Tag 11 ends
+            req->len = value_len;
+            //req->ts_ns = skb->tstamp;
+            //req->ts_ns = bpf_ktime_get_ns();
 
+            bpf_ringbuf_submit(req, 0);
+            
+            req = 0;
+            in_tag11 = false;
+            window = SOH;
+            //i += 40; // jump in the middle of the next FIX message? 
+            continue;
+        }
+
+        if (value_len < FIXLAT_MAX_TAGVAL_LEN) { 
+            req->ord_id[value_len] = c;
+            value_len++;
         }
     }
 
