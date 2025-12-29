@@ -121,116 +121,69 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 
 static int handle_ingress(struct __sk_buff *skb)
 {
-    void *data = (void *)(long)skb->data;
-    void *data_end = (void *)(long)skb->data_end;
+    __u8 *data_start = (__u8 *)(long)skb->data;
+    __u8 *data_end = (__u8 *)(long)skb->data_end;
 
-    /* Parse Ethernet header */
-    struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end)
-        return TC_ACT_OK;
+    __u8 *data = data_start;
 
-    if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
-        return TC_ACT_OK;
+    data += 20; // jump over TCP header
 
-    /* Parse IP header */
-    struct iphdr *ip = (void *)(eth + 1);
-    if ((void *)(ip + 1) > data_end)
-        return TC_ACT_OK;
-
-    if (ip->protocol != IPPROTO_TCP)
-        return TC_ACT_OK;
-
-    __u32 ip_hdr_len = ip->ihl * 4;
-    if (ip_hdr_len < 20)
-        return TC_ACT_OK;
-
-    /* Parse TCP header */
-    struct tcphdr *tcp = (void *)ip + ip_hdr_len;
-    if ((void *)(tcp + 1) > data_end)
-        return TC_ACT_OK;
-
-    __u32 tcp_hdr_len = tcp->doff * 4;
-    if (tcp_hdr_len < 20)
-        return TC_ACT_OK;
-
-    /* Get payload pointer */
-    unsigned char *ptr = (void *)tcp + tcp_hdr_len;
-    unsigned char *end = (unsigned char *)data_end;
-
-    /* Need at least 4 bytes for "8=FIX" check */
-    if (ptr + 4 > end)
-        return TC_ACT_OK;
-
-    /* Check for FIX protocol signature: "8=FIX" as single 32-bit read */
-    __u32 magic = *(__u32 *)ptr;
-    if (magic != FIX_BEGIN_STRING_PREFIX)
-        return TC_ACT_OK;
-
-    /* FIX message detected - skip header (tag 11 never appears in header) */
-    ptr += 16;
-    if (ptr >= end)
-        return TC_ACT_OK;
-
+ 
     /* First pass: find offsets and lengths of up to MAX_TAG11_PER_PACKET tag 11 values */
-    __u16 tag11_offsets[MAX_TAG11_PER_PACKET];
-    __u8 tag11_lengths[MAX_TAG11_PER_PACKET];
-    __u8 tag11_count = 0;
+    int tag11_offsets[MAX_TAG11_PER_PACKET];
+    int tag11_lengths[MAX_TAG11_PER_PACKET];
+    int tag11_count = 0;
 
-    __u32 win = 0;
-    __u16 value_start_offset = 0;
-    __u8 value_len = 0;
+    __u32 window = 0;
+    int value_start_offset = 0;
+    
 
     #pragma clang loop unroll(disable)
-    while (ptr < end) {
+    while (data < data_end) {
         if (tag11_count >= MAX_TAG11_PER_PACKET)
             break;
 
-        unsigned char c = *ptr;
-        ptr++;
+        __u8 c = *data;
+        data++;
 
-        /* Processing tag 11 value */
-        if (value_start_offset > 0 && c == SOH) {
-            /* Found end of tag 11 value */
-            tag11_offsets[tag11_count] = value_start_offset;
-            tag11_lengths[tag11_count] = value_len;
-            tag11_count++;
-            value_start_offset = 0;
-            win = SOH;
-            continue;
-        }
+        if (value_start_offset == 0) {
+            
+            window = (window << 8) | c;
+            if (window == TAG11) { // Tag 11 begins
+                value_start_offset = (data_start - data);
+            }
+            
+        } else {
+            if (c == SOH) {  // Tag 11 ends
+                tag11_offsets[tag11_count] = value_start_offset;
+                tag11_lengths[tag11_count] = (data_start - data - value_start_offset);
+                tag11_count++;
+                value_start_offset = 0;
+                window = SOH;
+            }
 
-        if (value_start_offset > 0) {
-            value_len++;
-            continue;
-        }
-
-        /* Scanning for TAG11 pattern */
-        win = (win << 8) | c;
-        if (win == TAG11) {
-            value_start_offset = (__u16)(ptr - (unsigned char *)data);
-            value_len = 0;
         }
     }
 
-    /* Second pass: extract actual values using bpf_skb_load_bytes */
-    #pragma clang loop unroll(disable)
-    for (int i = 0; i < MAX_TAG11_PER_PACKET; i++) {
-        if (i >= tag11_count)
-            break;
+    // /* Second pass: extract actual values using bpf_skb_load_bytes */
+    // #pragma clang loop unroll(disable)
+    // for (int i = 0; i < MAX_TAG11_PER_PACKET; i++) {
+    //     if (i >= tag11_count)
+    //         break;
 
-        struct pending_req req = {};
-        __u16 offset = tag11_offsets[i];
-        __u8 len = tag11_lengths[i];
+    //     // struct pending_req req = {};
+    //     // __u16 offset = tag11_offsets[i];
+    //     // __u8 len = tag11_lengths[i];
 
-        /* Verifier needs explicit range check */
-        if (len < 1 || len > FIXLAT_MAX_TAGVAL_LEN)
-            continue;
+    //     // /* Verifier needs explicit range check */
+    //     // if (len < 1 || len > FIXLAT_MAX_TAGVAL_LEN)
+    //     //     continue;
 
-        if (bpf_skb_load_bytes(skb, offset, req.ord_id, len) == 0) {
-            req.len = len;
-            bpf_map_push_elem(&pending_q, &req, 0);
-        }
-    }
+    //     // if (bpf_skb_load_bytes(skb, offset, req.ord_id, len) == 0) {
+    //     //     req.len = len;
+    //     //     bpf_map_push_elem(&pending_q, &req, 0);
+    //     // }
+    // }
 
     return TC_ACT_OK;
 }
