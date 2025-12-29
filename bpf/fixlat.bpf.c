@@ -24,6 +24,13 @@ struct {
     __type(value, struct pending_req);
 } pending_q SEC(".maps");
 
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1 << 20); // 1Mb
+} pending_req_rb SEC(".maps");
+
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 64);
@@ -124,66 +131,51 @@ static int handle_ingress(struct __sk_buff *skb)
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end = (__u8 *)(long)skb->data_end;
 
-    __u8 *data = data_start;
 
-    data += 20; // jump over TCP header
-
- 
-    /* First pass: find offsets and lengths of up to MAX_TAG11_PER_PACKET tag 11 values */
-    int tag11_offsets[MAX_TAG11_PER_PACKET];
-    int tag11_lengths[MAX_TAG11_PER_PACKET];
+    struct pending_req *req = 0;
+    
     int tag11_count = 0;
 
     __u32 window = 0;
-    int value_start_offset = 0;
-    
 
-    #pragma clang loop unroll(disable)
-    while (data < data_end) {
-        if (tag11_count >= MAX_TAG11_PER_PACKET)
+    int value_len = 0;
+
+    //#pragma clang loop unroll(disable)
+    for (int i = 0; i < FIXLAT_MAX_SCAN; i++) {
+        __u8 *p = data_start + i;
+        if (p + 1 > data_end)
             break;
 
-        __u8 c = *data;
-        data++;
+        __u8 c = *p;
 
-        if (value_start_offset == 0) {
-            
+        if (req == 0) {
             window = (window << 8) | c;
-            if (window == TAG11) { // Tag 11 begins
-                value_start_offset = (data_start - data);
+            if (window == TAG11) { // Tag 11 begins <SOH>11=
+                value_len = 0;
+                req = bpf_ringbuf_reserve(&pending_req_rb, sizeof(struct pending_req), 0);
+                if (!req)
+                    break;
             }
-            
         } else {
-            if (c == SOH) {  // Tag 11 ends
-                tag11_offsets[tag11_count] = value_start_offset;
-                tag11_lengths[tag11_count] = (data_start - data - value_start_offset);
-                tag11_count++;
-                value_start_offset = 0;
+            if (c == SOH || value_len == FIXLAT_MAX_TAGVAL_LEN) {  // Tag 11 ends
+                req->len = value_len;
+                //req->ts_ns = skb->tstamp;
+                //req->ts_ns = bpf_ktime_get_ns();
+
+                bpf_ringbuf_submit(req, 0);
+                
+                req = 0;
                 window = SOH;
+            } else {    
+                req->ord_id[value_len++] = c;
             }
 
         }
     }
 
-    // /* Second pass: extract actual values using bpf_skb_load_bytes */
-    // #pragma clang loop unroll(disable)
-    // for (int i = 0; i < MAX_TAG11_PER_PACKET; i++) {
-    //     if (i >= tag11_count)
-    //         break;
+    if (req)
+        bpf_ringbuf_discard(req, 0);
 
-    //     // struct pending_req req = {};
-    //     // __u16 offset = tag11_offsets[i];
-    //     // __u8 len = tag11_lengths[i];
-
-    //     // /* Verifier needs explicit range check */
-    //     // if (len < 1 || len > FIXLAT_MAX_TAGVAL_LEN)
-    //     //     continue;
-
-    //     // if (bpf_skb_load_bytes(skb, offset, req.ord_id, len) == 0) {
-    //     //     req.len = len;
-    //     //     bpf_map_push_elem(&pending_q, &req, 0);
-    //     // }
-    // }
 
     return TC_ACT_OK;
 }

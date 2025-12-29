@@ -7,11 +7,13 @@
 
 #define FIXLAT_MAX_TAGVAL_LEN 24
 
+#define FIXLAT_MAX_SCAN 1500
+
 
 struct pending_req {
     __u64 ts_ns;
     __u8  len;
-    char  ord_id[FIXLAT_MAX_TAGVAL_LEN];
+    __u8  ord_id[FIXLAT_MAX_TAGVAL_LEN];
 };
 
 struct fixlat_stats {
