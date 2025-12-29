@@ -7,7 +7,7 @@
 
 #define FIXLAT_MAX_TAGVAL_LEN 24
 
-#define FIXLAT_MAX_SCAN 512
+#define FIXLAT_MAX_SCAN 1500
 
 
 struct pending_req {
