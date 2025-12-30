@@ -141,6 +141,9 @@ static int handle_ingress(struct __sk_buff *skb)
 
     #pragma clang loop unroll(disable)
     for (int i = 0; i < FIXLAT_MAX_SCAN; i++) {
+        if ((i & 63) == 0) {  // Every 64 iterations
+            asm volatile("" ::: "memory");
+        }
         __u8 *p = data_start + i;
         if (p + 1 > data_end)
             break;
