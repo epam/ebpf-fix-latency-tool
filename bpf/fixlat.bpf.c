@@ -82,8 +82,13 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx, void *ringbuf, void *jump_table, bool is_ingress)
 {
     // Verify magic marker set by header validation function
-    if (skb->cb[CB_MAGIC] != CB_MAGIC_MARKER)
-        return TC_ACT_OK; // CB buffer was clobbered, abort
+    if (skb->cb[CB_MAGIC] != CB_MAGIC_MARKER) {
+        // CB buffer was clobbered, abort
+        __u32 z = 0;
+        struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+        if (st) stat_inc(&st->cb_clobbered);
+        return TC_ACT_OK;
+    }
 
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end   = (__u8 *)(long)skb->data_end;
@@ -120,8 +125,13 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
             data_offset++;
 
             __u8 *p = data_start + data_offset;
-            if (p + 1 > data_end)
-                return TC_ACT_OK; // end of packet (abnormal)
+            if (p + 1 > data_end) {
+                // Tag 11 value exceeded packet boundary
+                __u32 z = 0;
+                struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+                if (st) stat_inc(&st->tag11_too_long);
+                return TC_ACT_OK;
+            }
 
             __u8 c = *p;
         
@@ -156,7 +166,10 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
 
     // Advance scan position for next tail call (back off 3 bytes to avoid missing patterns at boundaries)
     if (base >= data_offset - 3) {
-        //TODO: "No forward advance" - Increment error counter
+        // Insufficient forward progress - parser is stuck
+        __u32 z = 0;
+        struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+        if (st) stat_inc(&st->parser_stuck);
         return TC_ACT_OK;
     }
     skb->cb[CB_SCAN_START] = data_offset - 3;
@@ -181,19 +194,15 @@ int handle_ingress_headers(struct __sk_buff *skb)
     if ((void *)(eth + 1) > (void *)data_end)
         return TC_ACT_OK;
 
-    if (eth->h_proto != bpf_htons(ETH_P_IP)) {
-        if (st) stat_inc(&st->non_eth_ip);
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
         return TC_ACT_OK;
-    }
 
     struct iphdr *ip = (void *)(eth + 1);
     if ((void *)(ip + 1) > (void *)data_end)
         return TC_ACT_OK;
 
-    if (ip->protocol != IPPROTO_TCP) {
-        if (st) stat_inc(&st->non_tcp);
+    if (ip->protocol != IPPROTO_TCP)
         return TC_ACT_OK;
-    }
 
     __u32 ihl = ip->ihl * 4;
     if (ihl < sizeof(*ip))
@@ -212,16 +221,12 @@ int handle_ingress_headers(struct __sk_buff *skb)
         return TC_ACT_OK;
 
     // Empty TCP payload (pure ACKs, keepalives, etc.)
-    if (payload >= data_end) {
-        if (st) stat_inc(&st->empty_payload);
+    if (payload >= data_end)
         return TC_ACT_OK;
-    }
 
     // FIX messages must be at least 32 bytes
-    if (payload + 32 > data_end) {
-        if (st) stat_inc(&st->empty_payload);
+    if (payload + 32 > data_end)
         return TC_ACT_OK;
-    }
 
     // Verify FIX protocol prefix "8=FI"
     __u32 *prefix = (__u32 *)payload;
@@ -280,19 +285,15 @@ int handle_egress_headers(struct __sk_buff *skb)
     if ((void *)(eth + 1) > (void *)data_end)
         return TC_ACT_OK;
 
-    if (eth->h_proto != bpf_htons(ETH_P_IP)) {
-        if (st) stat_inc(&st->non_eth_ip);
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
         return TC_ACT_OK;
-    }
 
     struct iphdr *ip = (void *)(eth + 1);
     if ((void *)(ip + 1) > (void *)data_end)
         return TC_ACT_OK;
 
-    if (ip->protocol != IPPROTO_TCP) {
-        if (st) stat_inc(&st->non_tcp);
+    if (ip->protocol != IPPROTO_TCP)
         return TC_ACT_OK;
-    }
 
     __u32 ihl = ip->ihl * 4;
     if (ihl < sizeof(*ip))
@@ -311,16 +312,12 @@ int handle_egress_headers(struct __sk_buff *skb)
         return TC_ACT_OK;
 
     // Empty TCP payload (pure ACKs, keepalives, etc.)
-    if (payload >= data_end) {
-        if (st) stat_inc(&st->empty_payload);
+    if (payload >= data_end)
         return TC_ACT_OK;
-    }
 
     // FIX messages must be at least 32 bytes
-    if (payload + 32 > data_end) {
-        if (st) stat_inc(&st->empty_payload);
+    if (payload + 32 > data_end)
         return TC_ACT_OK;
-    }
 
     // Verify FIX protocol prefix "8=FI"
     __u32 *prefix = (__u32 *)payload;
@@ -339,6 +336,8 @@ int handle_egress_headers(struct __sk_buff *skb)
         if (!(sport == cfg->watch_port || dport == cfg->watch_port))
             return TC_ACT_OK;
     }
+
+
 
     // Initialize scan state
     skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;

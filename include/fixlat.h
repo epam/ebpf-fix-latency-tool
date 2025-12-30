@@ -19,12 +19,14 @@ struct tag11_with_timestamp {
 struct fixlat_stats {
     __u64 inbound_total; // count number of tag 11 parsed
     __u64 outbound_total;
-    __u64 unmatched_outbound;
+    __u64 matched_latency; // successfully matched and measured
+    __u64 tag11_mismatch; // outbound tag 11 not found in pending map
+    // Error counters
+    __u64 cb_clobbered; // magic marker was overwritten
+    __u64 tag11_too_long; // tag 11 value exceeded FIXLAT_MAX_TAGVAL_LEN or packet boundary
+    __u64 parser_stuck; // tail call made insufficient forward progress
     // Debug counters
     __u64 total_packets;
-    __u64 non_eth_ip;
-    __u64 non_tcp;
-    __u64 empty_payload;
 };
 
 struct config {
