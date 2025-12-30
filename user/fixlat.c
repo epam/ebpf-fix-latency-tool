@@ -61,21 +61,19 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
 
     uint64_t matched=0; for (int i=0;i<64;i++) matched += buckets[i];
 
-    printf("[fixlat-kfifo] matched=%llu inbound=%llu outbound=%llu fifo_missed=%llu unmatched_out=%llu  p50=%lluns p90=%lluns p99=%lluns p99.9=%lluns\n",
+    printf("[fixlat-kfifo] matched=%llu inbound=%llu outbound=%llu unmatched_out=%llu  p50=%lluns p90=%lluns p99=%lluns p99.9=%lluns\n",
         (unsigned long long)matched,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
-        (unsigned long long)st.fifo_missed,
         (unsigned long long)st.unmatched_outbound,
         (unsigned long long)p50,
         (unsigned long long)p90,
         (unsigned long long)p99,
         (unsigned long long)p999);
-    printf("[DEBUG] total_pkts=%llu non_eth_ip=%llu non_tcp=%llu no_tag11=%llu empty_payload=%llu\n",
+    printf("[DEBUG] total_pkts=%llu non_eth_ip=%llu non_tcp=%llu empty_payload=%llu\n",
         (unsigned long long)st.total_packets,
         (unsigned long long)st.non_eth_ip,
         (unsigned long long)st.non_tcp,
-        (unsigned long long)st.no_tag11,
         (unsigned long long)st.empty_payload);
     fflush(stdout);
 }
