@@ -152,7 +152,7 @@ static int handle_ingress(struct __sk_buff *skb)
             if (window == TAG11) { // Tag 11 begins <SOH>11=
                 looking_for_tag11 = false;
                 value_length = 0;
-                __builtin_memset(&req, 0, sizeof(req));
+                __builtin_memset(&req, 0, sizeof(req)); // Verifier likes this redundant reset
             }
         } else {
             if (c == SOH) {  // Tag 11 ends
@@ -162,7 +162,7 @@ static int handle_ingress(struct __sk_buff *skb)
                 if (bpf_ringbuf_output(&pending_req_rb, &req, sizeof(req), BPF_RB_NO_WAKEUP) != 0)
                     break;
 
-                window = SOH;
+                window = SOH; // =SOH confuses verifier
                 looking_for_tag11 = true;
 
             } else {
