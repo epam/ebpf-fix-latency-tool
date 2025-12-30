@@ -299,6 +299,7 @@ int handle_ingress_headers(struct __sk_buff *skb)
     return TC_ACT_OK;
 }
 
+// Repeats as many times as we expect FIX messages (tag 11) per TCP packet 
 SEC("tc") int handle_ingress_payload_1(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 1); }
 SEC("tc") int handle_ingress_payload_2(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 2); }
 SEC("tc") int handle_ingress_payload_3(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 3); }
