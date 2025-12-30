@@ -32,6 +32,13 @@ struct {
 
 
 struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, 8);   /* number of tail programs */
+    __type(key, __u32);
+    __type(value, __u32);
+} jump_table SEC(".maps");
+
+struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 64);
     __type(key, __u32);
@@ -124,59 +131,127 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 // }
 
 
-
-
-static int handle_ingress(struct __sk_buff *skb)
+#define SPAN   320
+#define STRIDE 256
+#define MAX_ORDID  (sizeof(((struct pending_req*)0)->ord_id))
+static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx)
 {
     __u8 *data_start = (__u8 *)(long)skb->data;
-    __u8 *data_end = (__u8 *)(long)skb->data_end;
+    __u8 *data_end   = (__u8 *)(long)skb->data_end;
 
-    __u64 timestamp = bpf_ktime_get_ns();
-    __u32 window = SOH;
-    size_t value_length = 0;
-    bool looking_for_tag11 = true;
-
-    struct pending_req req;
-
+    __u32 window = 0;
+    bool found_tag11 = false;
+    __u32 base = idx * STRIDE;
 
     #pragma clang loop unroll(disable)
-    for (int i = 0; i < FIXLAT_MAX_SCAN; i++) {
-        if ((i & 63) == 0) {  // Every 64 iterations
-            asm volatile("" ::: "memory");
-        }
+    for (int j = 0; j < SPAN; j++) {
+        __u32 i = base + j;
+
         __u8 *p = data_start + i;
         if (p + 1 > data_end)
             break;
-
         __u8 c = *p;
 
-        if (looking_for_tag11) {
-            window = (window << 8) | c;
-            if (window == TAG11) { // Tag 11 begins <SOH>11=
-                looking_for_tag11 = false;
-                value_length = 0;
-                __builtin_memset(&req, 0, sizeof(req)); // Verifier likes this redundant reset
-            }
-        } else {
-            if (c == SOH) {  // Tag 11 ends
-                req.len = value_length;
-                req.ts_ns = timestamp;
-                
-                if (bpf_ringbuf_output(&pending_req_rb, &req, sizeof(req), BPF_RB_NO_WAKEUP) != 0)
-                    break;
-
-                window = SOH; // =SOH confuses verifier
-                looking_for_tag11 = true;
-
-            } else {
-                if (value_length < sizeof(req.ord_id))
-                    req.ord_id[value_length++] = c;
-            }
+        window = (window << 8) | c;
+        found_tag11 = (window == TAG11);  
+        if (found_tag11) { // Tag 11 begins <SOH>11=
+            base = base + j + 1;
+            break;
         }
     }
 
+    if (found_tag11) {
+        struct pending_req req = {};
+        
+        for (int k = 0; k < sizeof(req.ord_id); k++) {
+            __u32 i = base + k;
+            __u8 *p = data_start + i;
+            if (p + 1 > data_end)
+                break;
+
+            __u8 c = *p;
+        
+            if (c != SOH) {  
+                req.ord_id[k] = c;
+            } else { // Tag 11 ends
+                req.len = k;
+                req.ts_ns = bpf_ktime_get_ns();
+
+                bpf_ringbuf_output(&pending_req_rb, &req, sizeof(req), BPF_RB_NO_WAKEUP);
+
+                break;
+            }
+        }
+    }
+            
+
+    // Tail call next chunk
+    __u32 next = idx + 1;
+    bpf_tail_call(skb, &jump_table, next);
+
     return TC_ACT_OK;
 }
+
+
+SEC("tc") int handle_ingress_0(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 0); }
+SEC("tc") int handle_ingress_1(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 1); }
+SEC("tc") int handle_ingress_2(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 2); }
+SEC("tc") int handle_ingress_3(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 3); }
+SEC("tc") int handle_ingress_4(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 4); }
+SEC("tc") int handle_ingress_5(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 5); }
+
+
+// static int handle_ingress(struct __sk_buff *skb)
+// {
+//     __u8 *data_start = (__u8 *)(long)skb->data;
+//     __u8 *data_end = (__u8 *)(long)skb->data_end;
+
+//     __u64 timestamp = bpf_ktime_get_ns();
+//     __u32 window = SOH;
+//     size_t value_length = 0;
+//     bool looking_for_tag11 = true;
+
+//     struct pending_req req;
+
+
+//     #pragma clang loop unroll(disable)
+//     for (int i = 0; i < FIXLAT_MAX_SCAN; i++) {
+//         if ((i & 63) == 0) {  // Every 64 iterations
+//             asm volatile("" ::: "memory");
+//         }
+//         __u8 *p = data_start + i;
+//         if (p + 1 > data_end)
+//             break;
+
+//         __u8 c = *p;
+
+//         if (looking_for_tag11) {
+//             window = (window << 8) | c;
+//             if (window == TAG11) { // Tag 11 begins <SOH>11=
+//                 looking_for_tag11 = false;
+//                 value_length = 0;
+//                 __builtin_memset(&req, 0, sizeof(req)); // Verifier likes this redundant reset
+//             }
+//         } else {
+//             if (c == SOH) {  // Tag 11 ends
+//                 req.len = value_length;
+//                 req.ts_ns = timestamp;
+                
+//                 if (bpf_ringbuf_output(&pending_req_rb, &req, sizeof(req), BPF_RB_NO_WAKEUP) != 0)
+//                     break;
+
+//                 window = SOH; // =SOH confuses verifier
+//                 looking_for_tag11 = true;
+
+//             } else {
+//                 if (value_length < sizeof(req.ord_id))
+//                     req.ord_id[value_length++] = c;
+//             }
+//         }
+//     }
+
+//     return TC_ACT_OK;
+// }
 
 // // INGRESS: Simple path - just extract Tag 11 and push to queue
 // static int handle_ingress(struct __sk_buff *skb)
@@ -345,11 +420,11 @@ static int handle_ingress(struct __sk_buff *skb)
 //     return TC_ACT_OK;
 // }
 
-SEC("tc")
-int tc_ingress(struct __sk_buff *skb)
-{
-    return handle_ingress(skb);
-}
+// SEC("tc")
+// int tc_ingress(struct __sk_buff *skb)
+// {
+//     return handle_ingress(skb);
+// }
 
 // SEC("tc")
 // int tc_egress(struct __sk_buff *skb){ return handle_egress(skb); }
