@@ -133,10 +133,10 @@ static int handle_ingress(struct __sk_buff *skb)
 
     __u64 timestamp = bpf_ktime_get_ns();
     __u32 window = SOH;
-    __u32 value_length = 0;
+    size_t value_length = 0;
     bool looking_for_tag11 = true;
 
-    struct pending_req req = {};
+    struct pending_req req;
 
 
     #pragma clang loop unroll(disable)
@@ -166,7 +166,7 @@ static int handle_ingress(struct __sk_buff *skb)
                 looking_for_tag11 = true;
 
             } else {
-                if (value_length < FIXLAT_MAX_TAGVAL_LEN)
+                if (value_length < sizeof(req.ord_id))
                     req.ord_id[value_length++] = c;
             }
         }
