@@ -39,8 +39,16 @@ def main():
         except Exception:
             clid = b""
 
-        # Send simple ExecReport back
-        reply = b"8=FIX.4.4" + SOH + b"35=8" + SOH + b"11=" + clid + SOH
+        # Send ExecReport back with reversed sender/target and additional tags
+        reply = (b"8=FIX.4.4" + SOH +
+                 b"49=SERVER" + SOH +
+                 b"56=CLIENT" + SOH +
+                 b"50=traderjoe" + SOH +
+                 b"35=8" + SOH +
+                 b"11=" + clid + SOH +
+                 b"55=TSLA" + SOH +
+                 b"1=DogeCoin" + SOH +
+                 b"100=XNAS" + SOH)
         conn.sendall(reply)
 
         now = time.time()

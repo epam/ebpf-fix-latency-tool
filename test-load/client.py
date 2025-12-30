@@ -16,7 +16,15 @@ def main():
 
     for i in range(10000):
         clid = f"{i:08d}".encode()
-        msg = b"8=FIX.4.4" + SOH + b"35=D" + SOH + b"11=" + clid + SOH
+        msg = (b"8=FIX.4.4" + SOH +
+               b"49=CLIENT" + SOH +
+               b"56=SERVER" + SOH +
+               b"50=traderjoe" + SOH +
+               b"35=D" + SOH +
+               b"11=" + clid + SOH +
+               b"55=TSLA" + SOH +
+               b"1=DogeCoin" + SOH +
+               b"100=XNAS" + SOH)
 
         c.sendall(msg)
 
@@ -24,13 +32,13 @@ def main():
         if not reply:
             print(f"[{i}] ERROR: No reply received!", flush=True)
 
-        if i > 0 and i % 100 == 0:
+        if i > 0 and i % 10 == 0:
             elapsed = time.time() - start_time
             rate = i / elapsed if elapsed > 0 else 0
-            print(f"[{i}] Sent {i} messages in {elapsed:.1f}s ({rate:.0f} msg/s)", flush=True)
+            print(f"[{i}] Sent {i} messages in {elapsed:.1f}s ({rate:.1f} msg/s)", flush=True)
 
-        # Sleep 10ms between messages = ~100 msg/sec
-        time.sleep(0.01)
+        # Sleep 1 second between messages = 1 msg/sec
+        time.sleep(1.0)
 
     c.close()
 
