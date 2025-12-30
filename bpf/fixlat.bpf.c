@@ -247,8 +247,13 @@ int handle_ingress_headers(struct __sk_buff *skb)
     if (payload > data_end)
         return TC_ACT_OK;
 
-    // Empty TCP payload (pure ACKs, keepalives, etc.)
-    if (payload == data_end)
+    // FIX messages must be at least 32 bytes
+    if (payload + 32 > data_end)
+        return TC_ACT_OK;
+
+    // Verify FIX protocol prefix "8=FI"
+    __u32 *prefix = (__u32 *)payload;
+    if (*prefix != FIX_BEGIN_STRING_PREFIX)
         return TC_ACT_OK;
 
     // Port filtering
