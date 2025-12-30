@@ -130,58 +130,86 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 //     return payload;
 // }
 
+#define CB_MAGIC        1
+#define CB_SCAN_START   0
+#define CB_MAGIC_MARKER 0xBEBE  
+#define PER_CALL_SCAN_DEPTH 256
 
-#define SPAN   320
-#define STRIDE 256
-#define MAX_ORDID  (sizeof(((struct pending_req*)0)->ord_id))
 static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx)
 {
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end   = (__u8 *)(long)skb->data_end;
 
+    __u32 base; 
+    if (idx == 0) {
+        skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;
+        skb->cb[CB_SCAN_START]   = 0;
+        base = 0;
+    } else {
+        if (skb->cb[CB_MAGIC] != CB_MAGIC_MARKER) {
+            //TODO: increment error counter
+            return TC_ACT_OK; // somebody clobbered our magic marker - abort (no point fighting for cb buffer)
+        }
+        base = skb->cb[CB_SCAN_START];
+        if (base > 1500) // otherwise verifier assumes base is [0, 0xffffffff]
+            return TC_ACT_OK;
+    }
+
+
     __u32 window = 0;
-    bool found_tag11 = false;
-    __u32 base = idx * STRIDE;
+    bool found_tag11_start = false;
 
     #pragma clang loop unroll(disable)
-    for (int j = 0; j < SPAN; j++) {
+    for (int j = 0; j < PER_CALL_SCAN_DEPTH; j++) {
         __u32 i = base + j;
 
         __u8 *p = data_start + i;
         if (p + 1 > data_end)
-            break;
+            return TC_ACT_OK; // end of packet
         __u8 c = *p;
 
         window = (window << 8) | c;
-        found_tag11 = (window == TAG11);  
-        if (found_tag11) { // Tag 11 begins <SOH>11=
-            base = base + j + 1;
+        found_tag11_start = (window == TAG11);  
+        if (found_tag11_start) { // Tag 11 begins <SOH>11=
+            base = base + j + 1; // first byte of tag 11 value
             break;
         }
     }
 
-    if (found_tag11) {
+    skb->cb[CB_SCAN_START] = base + PER_CALL_SCAN_DEPTH - 3; 
+
+
+    if (found_tag11_start) {
+        bool found_tag11_end = false;
         struct pending_req req = {};
         
-        for (int k = 0; k < sizeof(req.ord_id); k++) {
+        #pragma clang loop unroll(disable)
+        for (int k = 0; k < FIXLAT_MAX_TAGVAL_LEN; k++) {
             __u32 i = base + k;
             __u8 *p = data_start + i;
             if (p + 1 > data_end)
-                break;
+                return TC_ACT_OK; // end of packet
 
             __u8 c = *p;
         
-            if (c != SOH) {  
-                req.ord_id[k] = c;
-            } else { // Tag 11 ends
+            if (c == SOH) { // Tag 11 ends
                 req.len = k;
-                req.ts_ns = bpf_ktime_get_ns();
-
-                bpf_ringbuf_output(&pending_req_rb, &req, sizeof(req), BPF_RB_NO_WAKEUP);
-
+                found_tag11_end = true;
                 break;
+            } else {  
+                req.ord_id[k] = c;
             }
         }
+
+        if (found_tag11_end) {
+            if (req.len > 0) {
+                req.ts_ns = bpf_ktime_get_ns();
+                bpf_ringbuf_output(&pending_req_rb, &req, sizeof(req), BPF_RB_NO_WAKEUP);
+                // advance to "where we ended" (right after SOH if seen, else after copied bytes) 
+                skb->cb[CB_SCAN_START] = base + req.len + 1;
+            }
+        }
+
     }
             
 

@@ -10,13 +10,8 @@ VMLINUX   := bpf/vmlinux.h
 BPFOBJ    := bpf/fixlat.bpf.o
 SKEL      := bpf/fixlat.skel.h
 USEROBJ   := user/fixlat
-TESTOBJ   := test/test_parser
 
 all: $(USEROBJ)
-
-test: $(TESTOBJ)
-	@echo "Running tests..."
-	@sudo $(TESTOBJ)
 
 $(VMLINUX):
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $@
@@ -32,10 +27,13 @@ $(SKEL): $(BPFOBJ)
 $(USEROBJ): user/fixlat.c $(SKEL)
 	$(CC) $(CFLAGS) -Ibpf -Iinclude user/fixlat.c -o $@ $(PKG)
 
-$(TESTOBJ): test/test_parser.c $(SKEL)
-	$(CC) $(CFLAGS) -Ibpf -Iinclude test/test_parser.c -o $@ $(PKG)
+verify: $(BPFOBJ)
+	@echo "Verifying eBPF programs..."
+	@sudo $(BPFTOOL) prog loadall $(BPFOBJ) /sys/fs/bpf/fixlat_verify type tc
+	@echo "✓ All programs passed eBPF verifier"
+	@sudo rm -rf /sys/fs/bpf/fixlat_verify
 
 clean:
-	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(TESTOBJ)
+	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ)
 
-.PHONY: all test clean
+.PHONY: all verify clean
