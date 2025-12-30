@@ -19,13 +19,6 @@ struct {
     __type(value, struct config);
 } cfg_map SEC(".maps");
 
-// struct {
-//     __uint(type, BPF_MAP_TYPE_QUEUE);
-//     __uint(max_entries, 65536);
-//     __type(value, struct pending_req);
-// } pending_q SEC(".maps");
-
-
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 20); // 1Mb
@@ -59,8 +52,7 @@ static const __u32 TAG11 = ((__u32)SOH << 24) | ((__u32)'1' << 16) | ((__u32)'1'
 /* FIX protocol BeginString tag starts with "8=FI" - as 32-bit for direct memory read (little-endian) */
 static const __u32 FIX_BEGIN_STRING_PREFIX = ((__u32)'8' << 0) | ((__u32)'=' << 8) | ((__u32)'F' << 16) | ((__u32)'I' << 24);
 
-/* Maximum number of tag 11 values to extract per packet */
-#define MAX_TAG11_PER_PACKET 8
+
 
 static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
 
@@ -258,6 +250,20 @@ int handle_ingress_headers(struct __sk_buff *skb)
     // Empty TCP payload (pure ACKs, keepalives, etc.)
     if (payload == data_end)
         return TC_ACT_OK;
+
+    // Port filtering
+    __u32 z = 0;
+    struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
+    if (!cfg)
+        return TC_ACT_OK;
+
+    // Bidirectional TCP port filter (0 = any)
+    if (cfg->watch_port != 0) {
+        __u16 sport = bpf_ntohs(tcp->source);
+        __u16 dport = bpf_ntohs(tcp->dest);
+        if (!(sport == cfg->watch_port || dport == cfg->watch_port))
+            return TC_ACT_OK;
+    }
 
     // Initialize scan state
     skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;
