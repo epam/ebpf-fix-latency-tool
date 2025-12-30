@@ -10,6 +10,7 @@ VMLINUX   := bpf/vmlinux.h
 BPFOBJ    := bpf/fixlat.bpf.o
 SKEL      := bpf/fixlat.skel.h
 USEROBJ   := user/fixlat
+TESTOBJ   := test/test_parser_logic
 
 all: $(USEROBJ)
 
@@ -27,6 +28,13 @@ $(SKEL): $(BPFOBJ)
 $(USEROBJ): user/fixlat.c $(SKEL)
 	$(CC) $(CFLAGS) -Ibpf -Iinclude user/fixlat.c -o $@ $(PKG)
 
+$(TESTOBJ): test/test_parser_logic.c include/fixlat.h
+	$(CC) $(CFLAGS) -Iinclude test/test_parser_logic.c -o $@
+
+test: $(TESTOBJ)
+	@echo "Running parser unit tests..."
+	@./$(TESTOBJ)
+
 verify: $(BPFOBJ)
 	@echo "Verifying eBPF programs..."
 	@sudo $(BPFTOOL) prog loadall $(BPFOBJ) /sys/fs/bpf/fixlat_verify type tc
@@ -34,6 +42,6 @@ verify: $(BPFOBJ)
 	@sudo rm -rf /sys/fs/bpf/fixlat_verify
 
 clean:
-	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ)
+	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(TESTOBJ)
 
-.PHONY: all verify clean
+.PHONY: all test verify clean
