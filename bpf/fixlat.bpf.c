@@ -52,7 +52,7 @@ struct {
 } hist_ns SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, struct fixlat_stats);
@@ -145,7 +145,7 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 
 // Clean packet scanning function - assumes packet is valid
 // Only called from payload tail functions (via tail calls)
-static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx, void *ringbuf, void *jump_table)
+static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx, void *ringbuf, void *jump_table, bool is_ingress)
 {
     // Verify magic marker set by header validation function
     if (skb->cb[CB_MAGIC] != CB_MAGIC_MARKER)
@@ -204,6 +204,16 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
             if (req.len > 0) {
                 req.ts_ns = bpf_ktime_get_ns();
                 bpf_ringbuf_output(ringbuf, &req, sizeof(req), BPF_RB_NO_WAKEUP);
+
+                // Track successful tag 11 extraction
+                __u32 z = 0;
+                struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+                if (st) {
+                    if (is_ingress)
+                        stat_inc(&st->inbound_total);
+                    else
+                        stat_inc(&st->outbound_total);
+                }
             }
         } else {
             // likely tag 11 length exceed FIXLAT_MAX_TAGVAL_LEN - report as error
@@ -307,18 +317,18 @@ int handle_ingress_headers(struct __sk_buff *skb)
 }
 
 // Ingress payload scanning tail calls
-SEC("tc") int handle_ingress_payload_1(struct __sk_buff *skb) { return handle_payload_chunk(skb, 1, &ingress_tag11_rb, &ingress_jump_table); }
-SEC("tc") int handle_ingress_payload_2(struct __sk_buff *skb) { return handle_payload_chunk(skb, 2, &ingress_tag11_rb, &ingress_jump_table); }
-SEC("tc") int handle_ingress_payload_3(struct __sk_buff *skb) { return handle_payload_chunk(skb, 3, &ingress_tag11_rb, &ingress_jump_table); }
-SEC("tc") int handle_ingress_payload_4(struct __sk_buff *skb) { return handle_payload_chunk(skb, 4, &ingress_tag11_rb, &ingress_jump_table); }
-SEC("tc") int handle_ingress_payload_5(struct __sk_buff *skb) { return handle_payload_chunk(skb, 5, &ingress_tag11_rb, &ingress_jump_table); }
+SEC("tc") int handle_ingress_payload_1(struct __sk_buff *skb) { return handle_payload_chunk(skb, 1, &ingress_tag11_rb, &ingress_jump_table, true); }
+SEC("tc") int handle_ingress_payload_2(struct __sk_buff *skb) { return handle_payload_chunk(skb, 2, &ingress_tag11_rb, &ingress_jump_table, true); }
+SEC("tc") int handle_ingress_payload_3(struct __sk_buff *skb) { return handle_payload_chunk(skb, 3, &ingress_tag11_rb, &ingress_jump_table, true); }
+SEC("tc") int handle_ingress_payload_4(struct __sk_buff *skb) { return handle_payload_chunk(skb, 4, &ingress_tag11_rb, &ingress_jump_table, true); }
+SEC("tc") int handle_ingress_payload_5(struct __sk_buff *skb) { return handle_payload_chunk(skb, 5, &ingress_tag11_rb, &ingress_jump_table, true); }
 
 // Egress payload scanning tail calls
-SEC("tc") int handle_egress_payload_1(struct __sk_buff *skb) { return handle_payload_chunk(skb, 1, &egress_tag11_rb, &egress_jump_table); }
-SEC("tc") int handle_egress_payload_2(struct __sk_buff *skb) { return handle_payload_chunk(skb, 2, &egress_tag11_rb, &egress_jump_table); }
-SEC("tc") int handle_egress_payload_3(struct __sk_buff *skb) { return handle_payload_chunk(skb, 3, &egress_tag11_rb, &egress_jump_table); }
-SEC("tc") int handle_egress_payload_4(struct __sk_buff *skb) { return handle_payload_chunk(skb, 4, &egress_tag11_rb, &egress_jump_table); }
-SEC("tc") int handle_egress_payload_5(struct __sk_buff *skb) { return handle_payload_chunk(skb, 5, &egress_tag11_rb, &egress_jump_table); }
+SEC("tc") int handle_egress_payload_1(struct __sk_buff *skb) { return handle_payload_chunk(skb, 1, &egress_tag11_rb, &egress_jump_table, false); }
+SEC("tc") int handle_egress_payload_2(struct __sk_buff *skb) { return handle_payload_chunk(skb, 2, &egress_tag11_rb, &egress_jump_table, false); }
+SEC("tc") int handle_egress_payload_3(struct __sk_buff *skb) { return handle_payload_chunk(skb, 3, &egress_tag11_rb, &egress_jump_table, false); }
+SEC("tc") int handle_egress_payload_4(struct __sk_buff *skb) { return handle_payload_chunk(skb, 4, &egress_tag11_rb, &egress_jump_table, false); }
+SEC("tc") int handle_egress_payload_5(struct __sk_buff *skb) { return handle_payload_chunk(skb, 5, &egress_tag11_rb, &egress_jump_table, false); }
 
 // Entry point for egress - validates TCP headers and initializes scanning
 SEC("tc")

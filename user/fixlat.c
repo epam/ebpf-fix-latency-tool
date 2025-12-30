@@ -47,9 +47,26 @@ static void snapshot_and_reset(int fd_hist, int fd_stats) {
     for (uint32_t i=0;i<64;i++) {
         uint64_t zero=0; bpf_map_update_elem(fd_hist, &i, &zero, BPF_ANY);
     }
-    uint32_t z=0; struct fixlat_stats st={0};
-    bpf_map_lookup_elem(fd_stats, &z, &st); // Defaults to zeros if lookup fails
-    
+
+    // Read per-CPU stats and aggregate
+    uint32_t z=0;
+    int nr_cpus = libbpf_num_possible_cpus();
+    struct fixlat_stats percpu_stats[nr_cpus];
+    struct fixlat_stats st={0};
+
+    if (bpf_map_lookup_elem(fd_stats, &z, percpu_stats) == 0) {
+        // Aggregate stats from all CPUs
+        for (int i = 0; i < nr_cpus; i++) {
+            st.inbound_total += percpu_stats[i].inbound_total;
+            st.outbound_total += percpu_stats[i].outbound_total;
+            st.unmatched_outbound += percpu_stats[i].unmatched_outbound;
+            st.total_packets += percpu_stats[i].total_packets;
+            st.non_eth_ip += percpu_stats[i].non_eth_ip;
+            st.non_tcp += percpu_stats[i].non_tcp;
+            st.empty_payload += percpu_stats[i].empty_payload;
+        }
+    }
+
     // Reset statistics for next period
     struct fixlat_stats zero_stats={0};
     bpf_map_update_elem(fd_stats, &z, &zero_stats, BPF_ANY);
