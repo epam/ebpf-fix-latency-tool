@@ -178,9 +178,8 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
     return TC_ACT_OK;
 }
 
-// Entry point - validates TCP headers and initializes scanning
-SEC("tc")
-int handle_ingress_headers(struct __sk_buff *skb)
+// Shared header validation and scanning initialization
+static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_table)
 {
     __u32 z = 0;
     struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
@@ -251,8 +250,22 @@ int handle_ingress_headers(struct __sk_buff *skb)
     skb->cb[CB_SCAN_START] = 0;
 
     // Start scanning via tail call
-    bpf_tail_call(skb, &ingress_jump_table, 1);
+    bpf_tail_call(skb, jump_table, 1);
     return TC_ACT_OK;
+}
+
+// Entry point - validates TCP headers and initializes ingress scanning
+SEC("tc")
+int handle_ingress_headers(struct __sk_buff *skb)
+{
+    return validate_and_scan(skb, &ingress_jump_table);
+}
+
+// Entry point - validates TCP headers and initializes egress scanning
+SEC("tc")
+int handle_egress_headers(struct __sk_buff *skb)
+{
+    return validate_and_scan(skb, &egress_jump_table);
 }
 
 // Ingress payload scanning tail calls
@@ -269,82 +282,4 @@ SEC("tc") int handle_egress_payload_3(struct __sk_buff *skb) { return handle_pay
 SEC("tc") int handle_egress_payload_4(struct __sk_buff *skb) { return handle_payload_chunk(skb, 4, &egress_tag11_rb, &egress_jump_table, false); }
 SEC("tc") int handle_egress_payload_5(struct __sk_buff *skb) { return handle_payload_chunk(skb, 5, &egress_tag11_rb, &egress_jump_table, false); }
 
-// Entry point for egress - validates TCP headers and initializes scanning
-SEC("tc")
-int handle_egress_headers(struct __sk_buff *skb)
-{
-    __u32 z = 0;
-    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
-    if (st) stat_inc(&st->total_packets);
-
-    __u8 *data_start = (__u8 *)(long)skb->data;
-    __u8 *data_end   = (__u8 *)(long)skb->data_end;
-
-    // Parse and validate TCP headers
-    struct ethhdr *eth = (void *)data_start;
-    if ((void *)(eth + 1) > (void *)data_end)
-        return TC_ACT_OK;
-
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
-        return TC_ACT_OK;
-
-    struct iphdr *ip = (void *)(eth + 1);
-    if ((void *)(ip + 1) > (void *)data_end)
-        return TC_ACT_OK;
-
-    if (ip->protocol != IPPROTO_TCP)
-        return TC_ACT_OK;
-
-    __u32 ihl = ip->ihl * 4;
-    if (ihl < sizeof(*ip))
-        return TC_ACT_OK;
-
-    struct tcphdr *tcp = (void *)((__u8 *)ip + ihl);
-    if ((void *)(tcp + 1) > (void *)data_end)
-        return TC_ACT_OK;
-
-    __u32 doff = tcp->doff * 4;
-    if (doff < sizeof(*tcp))
-        return TC_ACT_OK;
-
-    __u8 *payload = (__u8 *)tcp + doff;
-    if (payload > data_end)
-        return TC_ACT_OK;
-
-    // Empty TCP payload (pure ACKs, keepalives, etc.)
-    if (payload >= data_end)
-        return TC_ACT_OK;
-
-    // FIX messages must be at least 32 bytes
-    if (payload + 32 > data_end)
-        return TC_ACT_OK;
-
-    // Verify FIX protocol prefix "8=FI"
-    __u32 *prefix = (__u32 *)payload;
-    if (*prefix != FIX_BEGIN_STRING_PREFIX)
-        return TC_ACT_OK;
-
-    // Port filtering
-    struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
-    if (!cfg)
-        return TC_ACT_OK;
-
-    // Bidirectional TCP port filter (0 = any)
-    if (cfg->watch_port != 0) {
-        __u16 sport = bpf_ntohs(tcp->source);
-        __u16 dport = bpf_ntohs(tcp->dest);
-        if (!(sport == cfg->watch_port || dport == cfg->watch_port))
-            return TC_ACT_OK;
-    }
-
-
-
-    // Initialize scan state
-    skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;
-    skb->cb[CB_SCAN_START] = 0;
-
-    // Start scanning via tail call
-    bpf_tail_call(skb, &egress_jump_table, 1);
-    return TC_ACT_OK;
-}
 
