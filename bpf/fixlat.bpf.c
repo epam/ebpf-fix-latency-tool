@@ -18,11 +18,11 @@ struct {
     __type(value, struct config);
 } cfg_map SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_QUEUE);
-    __uint(max_entries, 65536);
-    __type(value, struct pending_req);
-} pending_q SEC(".maps");
+// struct {
+//     __uint(type, BPF_MAP_TYPE_QUEUE);
+//     __uint(max_entries, 65536);
+//     __type(value, struct pending_req);
+// } pending_q SEC(".maps");
 
 
 struct {
@@ -131,12 +131,13 @@ static int handle_ingress(struct __sk_buff *skb)
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end = (__u8 *)(long)skb->data_end;
 
-    //bool in_tag11 = false;
-    struct pending_req *req = 0;
-    
-    __u32 window = 0;
+    __u64 timestamp = bpf_ktime_get_ns();
+    __u32 window = SOH;
+    __u32 value_length = 0;
+    bool looking_for_tag11 = true;
 
-    __u32 value_len = 0;
+    struct pending_req req = {};
+
 
     #pragma clang loop unroll(disable)
     for (int i = 0; i < FIXLAT_MAX_SCAN; i++) {
@@ -146,40 +147,30 @@ static int handle_ingress(struct __sk_buff *skb)
 
         __u8 c = *p;
 
-        if (req == 0) {
+        if (looking_for_tag11) {
             window = (window << 8) | c;
-            if (window != TAG11) 
-                continue;
-
-            // Tag 11 begins <SOH>11=
-            value_len = 0;
-            req = bpf_ringbuf_reserve(&pending_req_rb, sizeof(*req), 0);
-            if (req == 0)
-                break; // overload
-            
+            if (window == TAG11) { // Tag 11 begins <SOH>11=
+                looking_for_tag11 = false;
+                value_length = 0;
+                __builtin_memset(&req, 0, sizeof(req));
+            }
         } else {
-        
             if (c == SOH) {  // Tag 11 ends
-                req->len = value_len;
-                req->ts_ns = skb->tstamp;
-                //req->ts_ns = bpf_ktime_get_ns();
-
-                bpf_ringbuf_submit(req, BPF_RB_NO_WAKEUP);
+                req.len = value_length;
+                req.ts_ns = timestamp;
                 
-                req = 0;
-                window = SOH;
-            } else {
+                if (bpf_ringbuf_output(&pending_req_rb, &req, sizeof(req), BPF_RB_NO_WAKEUP) != 0)
+                    break;
 
-                if (value_len < FIXLAT_MAX_TAGVAL_LEN) { 
-                    req->ord_id[value_len++] = c;
-                }
+                window = SOH;
+                looking_for_tag11 = true;
+
+            } else {
+                if (value_length < FIXLAT_MAX_TAGVAL_LEN)
+                    req.ord_id[value_length++] = c;
             }
         }
     }
-
-    if (req)
-        bpf_ringbuf_discard(req, BPF_RB_NO_WAKEUP);
-
 
     return TC_ACT_OK;
 }
