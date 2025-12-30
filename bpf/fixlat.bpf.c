@@ -81,11 +81,12 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 // Only called from payload tail functions (via tail calls)
 static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx, void *ringbuf, void *jump_table, bool is_ingress)
 {
+    __u32 z = 0;
+    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+
     // Verify magic marker set by header validation function
     if (skb->cb[CB_MAGIC] != CB_MAGIC_MARKER) {
         // CB buffer was clobbered, abort
-        __u32 z = 0;
-        struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
         if (st) stat_inc(&st->cb_clobbered);
         return TC_ACT_OK;
     }
@@ -127,8 +128,6 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
             __u8 *p = data_start + data_offset;
             if (p + 1 > data_end) {
                 // Tag 11 value exceeded packet boundary
-                __u32 z = 0;
-                struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
                 if (st) stat_inc(&st->tag11_too_long);
                 return TC_ACT_OK;
             }
@@ -150,8 +149,6 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
                 bpf_ringbuf_output(ringbuf, &req, sizeof(req), BPF_RB_NO_WAKEUP);
 
                 // Track successful tag 11 extraction
-                __u32 z = 0;
-                struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
                 if (st) {
                     if (is_ingress)
                         stat_inc(&st->inbound_total);
@@ -167,8 +164,6 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
     // Advance scan position for next tail call (back off 3 bytes to avoid missing patterns at boundaries)
     if (base >= data_offset - 3) {
         // Insufficient forward progress - parser is stuck
-        __u32 z = 0;
-        struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
         if (st) stat_inc(&st->parser_stuck);
         return TC_ACT_OK;
     }
@@ -181,10 +176,6 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
 // Shared header validation and scanning initialization
 static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_table)
 {
-    __u32 z = 0;
-    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
-    if (st) stat_inc(&st->total_packets);
-
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end   = (__u8 *)(long)skb->data_end;
 
@@ -233,6 +224,7 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
         return TC_ACT_OK;
 
     // Port filtering
+    __u32 z = 0;
     struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
     if (!cfg)
         return TC_ACT_OK;
@@ -244,6 +236,9 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
         if (!(sport == cfg->watch_port || dport == cfg->watch_port))
             return TC_ACT_OK;
     }
+
+    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+    if (st) stat_inc(&st->total_packets);
 
     // Initialize scan state
     skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;
