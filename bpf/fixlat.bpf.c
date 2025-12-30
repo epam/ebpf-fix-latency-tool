@@ -5,6 +5,7 @@
 
 /* Network constants not in vmlinux.h */
 #define ETH_P_IP    0x0800
+#define IPPROTO_TCP 6
 #define TC_ACT_OK   0
 /* ASCII control characters */
 #define SOH         0x01  /* Start of Header */
@@ -138,26 +139,19 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 // We do not support Jumbo MTU 
 #define MTU 1500
 
+// Clean packet scanning function - assumes packet is valid
 static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx)
 {
+    // For tail calls (idx > 0), verify magic marker
+    if (skb->cb[CB_MAGIC] != CB_MAGIC_MARKER)
+        return TC_ACT_OK; // CB buffer was clobbered, abort
+
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end   = (__u8 *)(long)skb->data_end;
 
-    __u32 base; // chunk start
-    if (idx == 0) {
-        skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;
-        skb->cb[CB_SCAN_START] = 0;
-        base = 0;
-    } else {
-        if (skb->cb[CB_MAGIC] != CB_MAGIC_MARKER) {
-            //TODO: increment error counter
-            return TC_ACT_OK; // somebody clobbered our magic marker - abort (no point fighting for cb buffer)
-        }
-        base = skb->cb[CB_SCAN_START];
-        if (base > MTU) // otherwise verifier assumes base is [0, 0xffffffff]
-            return TC_ACT_OK;
-    }
-
+    __u32 base = skb->cb[CB_SCAN_START];
+    if (base > MTU) // otherwise verifier assumes base is [0, 0xffffffff]
+        return TC_ACT_OK;
 
     bool found_tag11_start = false;
     __u32 window = 0;
@@ -171,9 +165,9 @@ static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx
         __u8 c = *p;
 
         window = (window << 8) | c;
-        found_tag11_start = (window == TAG11);  
+        found_tag11_start = (window == TAG11);
         if (found_tag11_start) { // Tag 11 begins <SOH>11=
-            break; // data_offset now points to '='
+            break; // data_offset points to byte after '='
         }
     }
 
@@ -181,7 +175,7 @@ static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx
     if (found_tag11_start) {
         bool found_tag11_end = false;
         struct pending_req req = {};
-        
+
         #pragma clang loop unroll(disable)
         for (int i = 0; i < FIXLAT_MAX_TAGVAL_LEN; i++) {
             data_offset++;
@@ -210,22 +204,69 @@ static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx
             // likely tag 11 length exceed FIXLAT_MAX_TAGVAL_LEN - report as error
         }
     }
-            
+
+    // Advance scan position for next tail call (back off 3 bytes to avoid missing patterns at boundaries)
     if (base >= data_offset - 3) {
         //TODO: "No forward advance" - Increment error counter
         return TC_ACT_OK;
     }
-
-
-    // advance to "where we ended" (right after SOH if seen, else after copied bytes) 
     skb->cb[CB_SCAN_START] = data_offset - 3;
 
-    bpf_tail_call(skb, &jump_table, idx + 1); // Tail call next chunk (scanning will start from cb[CB_SCAN_START])
+    bpf_tail_call(skb, &jump_table, idx + 1); // Tail call next chunk
     return TC_ACT_OK;
 }
 
+// Entry point - validates TCP headers and initializes scanning
+SEC("tc")
+int handle_ingress_0(struct __sk_buff *skb)
+{
+    __u8 *data_start = (__u8 *)(long)skb->data;
+    __u8 *data_end   = (__u8 *)(long)skb->data_end;
 
-SEC("tc") int handle_ingress_0(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 0); }
+    // Parse and validate TCP headers
+    struct ethhdr *eth = (void *)data_start;
+    if ((void *)(eth + 1) > (void *)data_end)
+        return TC_ACT_OK;
+
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+        return TC_ACT_OK;
+
+    struct iphdr *ip = (void *)(eth + 1);
+    if ((void *)(ip + 1) > (void *)data_end)
+        return TC_ACT_OK;
+
+    if (ip->protocol != IPPROTO_TCP)
+        return TC_ACT_OK;
+
+    __u32 ihl = ip->ihl * 4;
+    if (ihl < sizeof(*ip))
+        return TC_ACT_OK;
+
+    struct tcphdr *tcp = (void *)((__u8 *)ip + ihl);
+    if ((void *)(tcp + 1) > (void *)data_end)
+        return TC_ACT_OK;
+
+    __u32 doff = tcp->doff * 4;
+    if (doff < sizeof(*tcp))
+        return TC_ACT_OK;
+
+    __u8 *payload = (__u8 *)tcp + doff;
+    if (payload > data_end)
+        return TC_ACT_OK;
+
+    // Empty TCP payload (pure ACKs, keepalives, etc.)
+    if (payload == data_end)
+        return TC_ACT_OK;
+
+    // Initialize scan state
+    skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;
+    skb->cb[CB_SCAN_START] = 0;
+
+    // Start scanning
+    return handle_ingress_chunk(skb, 0);
+}
+
+
 SEC("tc") int handle_ingress_1(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 1); }
 SEC("tc") int handle_ingress_2(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 2); }
 SEC("tc") int handle_ingress_3(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 3); }
