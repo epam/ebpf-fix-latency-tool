@@ -11,11 +11,22 @@ def handle_sigint(sig, frame):
 signal.signal(signal.SIGINT, handle_sigint)
 
 def main():
+    if len(sys.argv) < 2:
+        print(f"Usage: {sys.argv[0]} <host> [port]")
+        print("  Examples:")
+        print(f"    {sys.argv[0]} 127.0.0.1")
+        print(f"    {sys.argv[0]} 192.168.1.74 8080")
+        sys.exit(1)
+
+    host = sys.argv[1]
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    s.bind(("192.168.1.74", 8080))
+    s.bind((host, port))
     s.listen(1)
-    print("Server listening on 192.168.1.74:8080 (TCP_NODELAY enabled)", flush=True)
+    print(f"Server listening on {host}:{port} (TCP_NODELAY enabled)", flush=True)
     conn, addr = s.accept()
     print(f"Connection from {addr}", flush=True)
     # Enable TCP_NODELAY on connection socket - responses sent immediately (no buffering)

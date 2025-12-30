@@ -6,11 +6,21 @@ import sys
 SOH = b"\x01"
 
 def main():
+    if len(sys.argv) < 2:
+        print(f"Usage: {sys.argv[0]} <host> [port]")
+        print("  Examples:")
+        print(f"    {sys.argv[0]} 127.0.0.1")
+        print(f"    {sys.argv[0]} 192.168.1.74 8080")
+        sys.exit(1)
+
+    host = sys.argv[1]
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
+
     # Create socket with TCP_NODELAY to send immediately (no Nagle algorithm)
     c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    c.connect(("192.168.1.74", 8080))
-    print("Connected to server (TCP_NODELAY enabled)", flush=True)
+    c.connect((host, port))
+    print(f"Connected to {host}:{port} (TCP_NODELAY enabled)", flush=True)
 
     start_time = time.time()
 
