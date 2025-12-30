@@ -22,7 +22,8 @@ $(VMLINUX):
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $@
 
 $(BPFOBJ): bpf/fixlat.bpf.c $(VMLINUX)
-	$(BPF_CLANG) -g -Oz -target bpf -D__TARGET_ARCH_x86 -D__BPF__ \
+	$(BPF_CLANG) -g -Oz -target bpf -D__TARGET_ARCH_x86 -D__BPF__  \
+       -fno-unroll-loops  \
 	  -I. -Ibpf -Iinclude -c $< -o $@
 
 $(SKEL): $(BPFOBJ)

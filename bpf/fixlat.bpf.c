@@ -138,7 +138,7 @@ static int handle_ingress(struct __sk_buff *skb)
 
     __u32 value_len = 0;
 
-    //#pragma clang loop unroll(disable)
+    #pragma clang loop unroll(disable)
     for (int i = 0; i < FIXLAT_MAX_SCAN; i++) {
         __u8 *p = data_start + i;
         if (p + 1 > data_end)
@@ -154,33 +154,31 @@ static int handle_ingress(struct __sk_buff *skb)
             // Tag 11 begins <SOH>11=
             value_len = 0;
             req = bpf_ringbuf_reserve(&pending_req_rb, sizeof(*req), 0);
-            if (!req)
+            if (req == 0)
                 break; // overload
             
-            //in_tag11 = true;
-            continue;
-        }
+        } else {
         
-        if (c == SOH) {  // Tag 11 ends
-            req->len = value_len;
-            req->ts_ns = skb->tstamp;
-            //req->ts_ns = bpf_ktime_get_ns();
+            if (c == SOH) {  // Tag 11 ends
+                req->len = value_len;
+                req->ts_ns = skb->tstamp;
+                //req->ts_ns = bpf_ktime_get_ns();
 
-            bpf_ringbuf_submit(req, 0);
-            
-            req = 0;
-            //in_tag11 = false;
-            window = SOH;
-            continue;
-        }
+                bpf_ringbuf_submit(req, BPF_RB_NO_WAKEUP);
+                
+                req = 0;
+                window = SOH;
+            } else {
 
-        if (value_len < FIXLAT_MAX_TAGVAL_LEN) { 
-            req->ord_id[value_len++] = c;
+                if (value_len < FIXLAT_MAX_TAGVAL_LEN) { 
+                    req->ord_id[value_len++] = c;
+                }
+            }
         }
     }
 
     if (req)
-        bpf_ringbuf_discard(req, 0);
+        bpf_ringbuf_discard(req, BPF_RB_NO_WAKEUP);
 
 
     return TC_ACT_OK;
