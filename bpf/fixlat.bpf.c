@@ -130,20 +130,23 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 //     return payload;
 // }
 
-#define CB_MAGIC        1
-#define CB_SCAN_START   0
+#define CB_MAGIC        0
+#define CB_SCAN_START   1
 #define CB_MAGIC_MARKER 0xBEBE  
 #define PER_CALL_SCAN_DEPTH 256
+
+// We do not support Jumbo MTU 
+#define MTU 1500
 
 static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx)
 {
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end   = (__u8 *)(long)skb->data_end;
 
-    __u32 base; 
+    __u32 base; // chunk start
     if (idx == 0) {
         skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;
-        skb->cb[CB_SCAN_START]   = 0;
+        skb->cb[CB_SCAN_START] = 0;
         base = 0;
     } else {
         if (skb->cb[CB_MAGIC] != CB_MAGIC_MARKER) {
@@ -151,32 +154,28 @@ static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx
             return TC_ACT_OK; // somebody clobbered our magic marker - abort (no point fighting for cb buffer)
         }
         base = skb->cb[CB_SCAN_START];
-        if (base > 1500) // otherwise verifier assumes base is [0, 0xffffffff]
+        if (base > MTU) // otherwise verifier assumes base is [0, 0xffffffff]
             return TC_ACT_OK;
     }
 
 
-    __u32 window = 0;
     bool found_tag11_start = false;
+    __u32 window = 0;
+    __u32 data_offset = base;
 
     #pragma clang loop unroll(disable)
-    for (int j = 0; j < PER_CALL_SCAN_DEPTH; j++) {
-        __u32 i = base + j;
-
-        __u8 *p = data_start + i;
+    for (int i = 0; i < PER_CALL_SCAN_DEPTH; i++, data_offset++) {
+        __u8 *p = data_start + data_offset;
         if (p + 1 > data_end)
-            return TC_ACT_OK; // end of packet
+            return TC_ACT_OK; // end of packet (normal)
         __u8 c = *p;
 
         window = (window << 8) | c;
         found_tag11_start = (window == TAG11);  
         if (found_tag11_start) { // Tag 11 begins <SOH>11=
-            base = base + j + 1; // first byte of tag 11 value
-            break;
+            break; // data_offset now points to '='
         }
     }
-
-    skb->cb[CB_SCAN_START] = base + PER_CALL_SCAN_DEPTH - 3; 
 
 
     if (found_tag11_start) {
@@ -184,20 +183,21 @@ static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx
         struct pending_req req = {};
         
         #pragma clang loop unroll(disable)
-        for (int k = 0; k < FIXLAT_MAX_TAGVAL_LEN; k++) {
-            __u32 i = base + k;
-            __u8 *p = data_start + i;
+        for (int i = 0; i < FIXLAT_MAX_TAGVAL_LEN; i++) {
+            data_offset++;
+
+            __u8 *p = data_start + data_offset;
             if (p + 1 > data_end)
-                return TC_ACT_OK; // end of packet
+                return TC_ACT_OK; // end of packet (abnormal)
 
             __u8 c = *p;
         
             if (c == SOH) { // Tag 11 ends
-                req.len = k;
+                req.len = i;
                 found_tag11_end = true;
                 break;
             } else {  
-                req.ord_id[k] = c;
+                req.ord_id[i] = c;
             }
         }
 
@@ -205,18 +205,22 @@ static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx
             if (req.len > 0) {
                 req.ts_ns = bpf_ktime_get_ns();
                 bpf_ringbuf_output(&pending_req_rb, &req, sizeof(req), BPF_RB_NO_WAKEUP);
-                // advance to "where we ended" (right after SOH if seen, else after copied bytes) 
-                skb->cb[CB_SCAN_START] = base + req.len + 1;
             }
+        } else {
+            // likely tag 11 length exceed FIXLAT_MAX_TAGVAL_LEN - report as error
         }
-
     }
             
+    if (base >= data_offset - 3) {
+        //TODO: "No forward advance" - Increment error counter
+        return TC_ACT_OK;
+    }
 
-    // Tail call next chunk
-    __u32 next = idx + 1;
-    bpf_tail_call(skb, &jump_table, next);
 
+    // advance to "where we ended" (right after SOH if seen, else after copied bytes) 
+    skb->cb[CB_SCAN_START] = data_offset - 3;
+
+    bpf_tail_call(skb, &jump_table, idx + 1); // Tail call next chunk (scanning will start from cb[CB_SCAN_START])
     return TC_ACT_OK;
 }
 
