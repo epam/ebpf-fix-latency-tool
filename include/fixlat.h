@@ -10,7 +10,7 @@
 
 
 
-struct pending_req {
+struct tag11_with_timestamp {
     __u64 ts_ns;
     __u8  len;
     __u8  ord_id[FIXLAT_MAX_TAGVAL_LEN];
