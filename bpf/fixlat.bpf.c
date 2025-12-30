@@ -140,9 +140,10 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 #define MTU 1500
 
 // Clean packet scanning function - assumes packet is valid
+// Only called from handle_ingress_1-5 (via tail calls)
 static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx)
 {
-    // For tail calls (idx > 0), verify magic marker
+    // Verify magic marker set by handle_ingress_0
     if (skb->cb[CB_MAGIC] != CB_MAGIC_MARKER)
         return TC_ACT_OK; // CB buffer was clobbered, abort
 
@@ -218,7 +219,7 @@ static __always_inline int handle_ingress_chunk(struct __sk_buff *skb, __u32 idx
 
 // Entry point - validates TCP headers and initializes scanning
 SEC("tc")
-int handle_ingress_0(struct __sk_buff *skb)
+int handle_ingress_headers(struct __sk_buff *skb)
 {
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end   = (__u8 *)(long)skb->data_end;
@@ -262,16 +263,16 @@ int handle_ingress_0(struct __sk_buff *skb)
     skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;
     skb->cb[CB_SCAN_START] = 0;
 
-    // Start scanning
-    return handle_ingress_chunk(skb, 0);
+    // Start scanning via tail call
+    bpf_tail_call(skb, &jump_table, 1);
+    return TC_ACT_OK;
 }
 
-
-SEC("tc") int handle_ingress_1(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 1); }
-SEC("tc") int handle_ingress_2(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 2); }
-SEC("tc") int handle_ingress_3(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 3); }
-SEC("tc") int handle_ingress_4(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 4); }
-SEC("tc") int handle_ingress_5(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 5); }
+SEC("tc") int handle_ingress_payload_1(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 1); }
+SEC("tc") int handle_ingress_payload_2(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 2); }
+SEC("tc") int handle_ingress_payload_3(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 3); }
+SEC("tc") int handle_ingress_payload_4(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 4); }
+SEC("tc") int handle_ingress_payload_5(struct __sk_buff *skb) { return handle_ingress_chunk(skb, 5); }
 
 
 // static int handle_ingress(struct __sk_buff *skb)
