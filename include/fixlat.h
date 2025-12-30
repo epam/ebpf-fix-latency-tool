@@ -29,8 +29,6 @@ struct fixlat_stats {
 
 struct config {
     __u16 watch_port; // host order; 0 = any
-    __u8  enabled;
-    __u8  pad;
 };
 
 #endif
