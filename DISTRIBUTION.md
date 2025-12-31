@@ -47,6 +47,11 @@ sudo apt install -y libbpf-dev libelf-dev zlib1g-dev libzstd-dev
 make static
 
 # Result: user/fixlat-static (single 2.2MB binary)
+
+# Or create distribution ZIP (recommended)
+make dist
+
+# Result: fixlat-0.0.1.zip containing fixlat-0.0.1/fixlat
 ```
 
 **Deploy to target server:**
@@ -119,24 +124,17 @@ Amazon Linux 2023 has all these enabled by default.
 
 ### For Production Cloud Servers:
 
-1. **Build static binary on CI/build server:**
+1. **Build distribution package on CI/build server:**
    ```bash
-   make static
+   make dist
+   # Creates: fixlat-0.0.1.zip
    ```
 
-2. **Create deployment package:**
-   ```bash
-   mkdir -p fixlat-dist
-   cp user/fixlat-static fixlat-dist/fixlat
-   chmod +x fixlat-dist/fixlat
-   tar czf fixlat-dist.tar.gz fixlat-dist/
-   ```
-
-3. **Deploy to target:**
+2. **Deploy to target:**
    ```bash
    # Extract
-   tar xzf fixlat-dist.tar.gz
-   sudo cp fixlat-dist/fixlat /usr/local/bin/
+   unzip fixlat-0.0.1.zip
+   sudo cp fixlat-0.0.1/fixlat /usr/local/bin/
 
    # Run
    sudo /usr/local/bin/fixlat -i eth0 -p 8080 -r 5

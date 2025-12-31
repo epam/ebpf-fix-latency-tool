@@ -1,5 +1,6 @@
 # Makefile (minimal libbpf CO-RE build)
 
+VERSION   := $(shell cat VERSION)
 BPF_CLANG ?= clang
 BPFTOOL   ?= $(shell find /usr/lib/linux-tools/*/bpftool 2>/dev/null | head -1)
 CC        ?= cc
@@ -48,5 +49,17 @@ verify: $(BPFOBJ)
 
 clean:
 	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(USEROBJ)-static $(TESTOBJ)
+	rm -f fixlat-$(VERSION).zip fixlat-$(VERSION)/fixlat
+	rmdir fixlat-$(VERSION) 2>/dev/null || true
 
-.PHONY: all test verify clean static
+# Create distribution ZIP with version suffix
+dist: static
+	@echo "Creating distribution package: fixlat-$(VERSION).zip"
+	@mkdir -p fixlat-$(VERSION)
+	@cp $(USEROBJ)-static fixlat-$(VERSION)/fixlat
+	@chmod +x fixlat-$(VERSION)/fixlat
+	@zip -q fixlat-$(VERSION).zip fixlat-$(VERSION)/fixlat
+	@rm -rf fixlat-$(VERSION)
+	@echo "Created: fixlat-$(VERSION).zip"
+
+.PHONY: all test verify clean static dist

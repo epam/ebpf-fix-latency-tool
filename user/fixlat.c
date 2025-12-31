@@ -23,6 +23,8 @@
 static volatile bool running = true;
 static int report_every_sec = 5;
 
+#define VERSION "0.0.1"
+
 // Pending inbound tag 11 map entry
 struct pending_tag11 {
     char key[FIXLAT_MAX_TAGVAL_LEN + 1]; // tag 11 value as string key
@@ -495,23 +497,27 @@ static void snapshot(int fd_stats, double elapsed_sec) {
 
 static void usage(const char *p){
     fprintf(stderr,
+        "fixlat v%s - eBPF FIX Protocol Latency Monitor\n\n"
         "Usage: %s -i <iface> [-p port] [-r seconds] [-m max] [-t timeout]\n"
-        "  -p  TCP port to watch (0 = any)\n"
-        "  -r  Report interval in seconds (default 5)\n"
-        "  -m  Maximum concurrent pending requests (default 65536)\n"
-        "  -t  Request timeout in seconds (default 0.5)\n", p);
+        "  -i  Network interface to monitor (required)\n"
+        "  -p  TCP port to watch (0 = any, default: 0)\n"
+        "  -r  Report interval in seconds (default: 5)\n"
+        "  -m  Maximum concurrent pending requests (default: 65536)\n"
+        "  -t  Request timeout in seconds (default: 0.5)\n"
+        "  -v  Show version and exit\n", VERSION, p);
 }
 
 int main(int argc, char **argv)
 {
     const char *iface=NULL; uint16_t port=0; int opt;
-    while ((opt=getopt(argc, argv, "i:p:r:m:t:")) != -1) {
+    while ((opt=getopt(argc, argv, "i:p:r:m:t:v")) != -1) {
         switch (opt) {
             case 'i': iface=optarg; break;
             case 'p': port=(uint16_t)atoi(optarg); break;
             case 'r': report_every_sec=atoi(optarg); break;
             case 'm': max_pending=(uint64_t)atoll(optarg); break;
             case 't': timeout_ns=(uint64_t)(atof(optarg) * 1e9); break;
+            case 'v': printf("fixlat v%s\n", VERSION); return 0;
             default: usage(argv[0]); return 1;
         }
     }
@@ -603,8 +609,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("fixlat-kfifo: attached to %s (port=%u), reporting every %ds\n",
-           iface, port, report_every_sec);
+    printf("fixlat v%s: attached to %s (port=%u), reporting every %ds\n",
+           VERSION, iface, port, report_every_sec);
     printf("Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands\n");
 
     // Enable raw mode for keyboard input

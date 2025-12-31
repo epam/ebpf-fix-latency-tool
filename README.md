@@ -1,5 +1,7 @@
 # fixlat - eBPF FIX Protocol Latency Monitor
 
+**Version 0.0.1**
+
 ** Latency measurement tool for FIX protocol traffic using eBPF TC hooks**
 
 `fixlat` is a lightweight eBPF-based tool that measures roundtrip latency for FIX protocol messages by correlating inbound requests with outbound responses. It captures TCP packets at the kernel level, extracts FIX Tag 11 (ClOrdID), matches request-response pairs, and computes in-out latency with nanosecond precision.
@@ -41,6 +43,9 @@ make
 ```bash
 make static
 # Produces user/fixlat-static (2.2MB, no runtime dependencies)
+
+make dist
+# Produces fixlat-0.0.1.zip (versioned distribution package)
 ```
 
 ---
@@ -56,11 +61,14 @@ sudo ./user/fixlat -i wlp0s20f3 -p 8080 -r 5
 - `-i <interface>` : Network interface to monitor (required)
 - `-p <port>` : TCP port to filter (0 = all ports, default: 0)
 - `-r <seconds>` : Stats reporting interval (default: 5)
+- `-m <max>` : Maximum concurrent pending requests (default: 65536)
+- `-t <seconds>` : Request timeout in seconds (default: 0.5)
+- `-v` : Show version and exit
 
 ### Sample Output
 ```
 sudo ./user/fixlat -i wlp0s20f3 -p 8080 -r 5
-fixlat-kfifo: attached to wlp0s20f3 (port=8080), reporting every 5s
+fixlat v0.0.1: attached to wlp0s20f3 (port=8080), reporting every 5s
 Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
 [fixlat] matched=325 inbound=325 outbound=325 mismatch=0 | rate: 78 match/sec | latency: min=24.250us avg=64.217us max=165.150us
 [traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325
@@ -124,6 +132,14 @@ MAX:      203.950us
 - **tag11_too_long**: Tag 11 value exceeded 24 bytes
 - **parser_stuck**: Tail call scanner made no forward progress
 
+### Pending Map Health (shown if evictions occur or approaching limit)
+```
+[pending] active=1234/65536 stale_evicted=15 forced=0
+```
+- **active**: Current number of pending requests / maximum allowed
+- **stale_evicted**: Requests evicted due to timeout (TTL expired)
+- **forced**: Requests evicted to make room when at limit (should be rare)
+
 ---
 
 
@@ -152,13 +168,17 @@ See [DISTRIBUTION.md](DISTRIBUTION.md) for deployment options including:
 
 **Quick deployment:**
 ```bash
-# Build static binary
-make static
+# Build distribution package
+make dist
 
 # Copy to target server (no dependencies needed!)
-scp user/fixlat-static user@server:/usr/local/bin/fixlat
+scp fixlat-0.0.1.zip user@server:/tmp/
 
-# Run on target
+# On target server
+unzip /tmp/fixlat-0.0.1.zip
+sudo cp fixlat-0.0.1/fixlat /usr/local/bin/
+
+# Run
 sudo /usr/local/bin/fixlat -i eth0 -p 8080 -r 5
 ```
 
@@ -201,12 +221,13 @@ The program automatically cleans up on exit (Ctrl+C or ESC key).
 - **Scalability**: Per-CPU maps for lock-free stats
 
 ### Limitations
+- **Tag 11 correlation only**: The tool uses FIX Tag 11 (ClOrdID) exclusively for correlating inbound requests with outbound responses. Other FIX tags (e.g., Tag 37 OrderID, Tag 41 OrigClOrdID) are not supported for correlation.
 - **Fragmented FIX messages**: Partially supported. If a Tag 11 field is split across TCP packets (e.g., `\x01 11=` in one packet, `ORDER123\x01` in the next), the parser will miss it. Tag 11 must be complete within a single TCP packet.
 - **Request-response model**: Expects at least one response message for each inbound request. Multiple responses per request are not explicitly handled.
 - **Max packet size**: 1500 bytes (no jumbo frame support)
 - **Max Tag 11 scanning depth**: 1280 bytes per packet (256 bytes × 5 tail call stages)
 - **Tag 11 value length**: Maximum 24 bytes (FIXLAT_MAX_TAGVAL_LEN)
-- **Concurrent pending requests**: Maximum 65,536 unique Tag 11 values awaiting responses at any given moment. Beyond this, hash collisions may cause missed matches.
+- **Concurrent pending requests**: Maximum 65,536 unique Tag 11 values awaiting responses at any given moment (configurable via `-m`). Stale entries are automatically evicted after 500ms timeout (configurable via `-t`). When at limit, oldest entries are evicted to make room.
 - **Single Tag 11 per message**: Assumes Tag 11 appears exactly once per FIX message
 - **IPv4 only**: No IPv6 support
 - **TCP only**: UDP-based protocols not supported
