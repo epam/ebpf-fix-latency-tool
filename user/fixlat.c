@@ -289,10 +289,11 @@ static void show_keyboard_help(void) {
     fflush(stdout);
 }
 
-static void snapshot(int fd_stats) {
+static void snapshot(int fd_stats, double elapsed_sec) {
     // Calculate interval stats (simple: MIN, AVG, MAX)
     uint64_t interval_count = matched_count;
     uint64_t interval_min = 0, interval_avg = 0, interval_max = 0;
+    double rate = (elapsed_sec > 0) ? (interval_count / elapsed_sec) : 0.0;
 
     if (interval_count > 0) {
         interval_min = percentile_from_buckets(interval_histogram, 0.0);
@@ -325,11 +326,12 @@ static void snapshot(int fd_stats) {
     }
 
     // Main stats line with interval latency (simple: MIN/AVG/MAX)
-    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu | latency: min=",
+    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu | rate: %.0f match/sec | latency: min=",
         (unsigned long long)interval_count,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
-        (unsigned long long)mismatch_count);
+        (unsigned long long)mismatch_count,
+        rate);
 
     if (interval_count > 0) {
         print_latency(interval_min);
@@ -506,7 +508,9 @@ int main(int argc, char **argv)
         int64_t elapsed_sec = now.tv_sec - last_report_time.tv_sec;
 
         if (elapsed_sec >= report_every_sec) {
-            snapshot(fd_stats);
+            double precise_elapsed = (now.tv_sec - last_report_time.tv_sec) +
+                                     (now.tv_nsec - last_report_time.tv_nsec) / 1e9;
+            snapshot(fd_stats, precise_elapsed);
             last_report_time = now;
         }
     }
