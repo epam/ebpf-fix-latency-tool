@@ -1,10 +1,10 @@
-# fixlat - eBPF FIX Protocol Latency Monitor
+# ebpf-fix-latency-tool - eBPF FIX Protocol Latency Monitor
 
 **Version 0.0.1**
 
-** Latency measurement tool for FIX protocol traffic using eBPF TC hooks**
+**Latency measurement tool for FIX protocol traffic using eBPF TC hooks**
 
-`fixlat` is a lightweight eBPF-based tool that measures roundtrip latency for FIX protocol messages by correlating inbound requests with outbound responses. It captures TCP packets at the kernel level, extracts FIX Tag 11 (ClOrdID), matches request-response pairs, and computes in-out latency with nanosecond precision.
+`ebpf-fix-latency-tool` is a lightweight eBPF-based tool that measures roundtrip latency for FIX protocol messages by correlating inbound requests with outbound responses. It captures TCP packets at the kernel level, extracts FIX Tag 11 (ClOrdID), matches request-response pairs, and computes in-out latency with nanosecond precision.
 
 ## Key Features
 
@@ -42,10 +42,10 @@ make
 ### Build Static Binary (for distribution)
 ```bash
 make static
-# Produces user/fixlat-static (2.2MB, no runtime dependencies)
+# Produces user/ebpf-fix-latency-tool-static (2.2MB, no runtime dependencies)
 
 make dist
-# Produces fixlat-0.0.1.zip (versioned distribution package)
+# Produces ebpf-fix-latency-tool-0.0.1.zip (versioned distribution package)
 ```
 
 ---
@@ -54,7 +54,7 @@ make dist
 
 ### Basic Example
 ```bash
-sudo ./user/fixlat -i wlp0s20f3 -p 8080 -r 5
+sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
 ```
 
 **Options:**
@@ -67,8 +67,8 @@ sudo ./user/fixlat -i wlp0s20f3 -p 8080 -r 5
 
 ### Sample Output
 ```
-sudo ./user/fixlat -i wlp0s20f3 -p 8080 -r 5
-fixlat v0.0.1: attached to wlp0s20f3 (port=8080), reporting every 5s
+sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
+ebpf-fix-latency-tool v0.0.1: attached to wlp0s20f3 (port=8080), reporting every 5s
 Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
 [fixlat] matched=325 inbound=325 outbound=325 mismatch=0 | rate: 78 match/sec | latency: min=24.250us avg=64.217us max=165.150us
 [traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325
@@ -153,7 +153,7 @@ MAX:      203.950us
 ./test-load/client.py 127.0.0.1 8080
 
 # Terminal 3: Monitor latency
-sudo ./user/fixlat -i lo -p 8080 -r 5
+sudo ./user/ebpf-fix-latency-tool -i lo -p 8080 -r 5
 ```
 
 ---
@@ -172,14 +172,14 @@ See [DISTRIBUTION.md](DISTRIBUTION.md) for deployment options including:
 make dist
 
 # Copy to target server (no dependencies needed!)
-scp fixlat-0.0.1.zip user@server:/tmp/
+scp ebpf-fix-latency-tool-0.0.1.zip user@server:/tmp/
 
 # On target server
-unzip /tmp/fixlat-0.0.1.zip
-sudo cp fixlat-0.0.1/fixlat /usr/local/bin/
+unzip /tmp/ebpf-fix-latency-tool-0.0.1.zip
+sudo cp ebpf-fix-latency-tool-0.0.1/ebpf-fix-latency-tool /usr/local/bin/
 
 # Run
-sudo /usr/local/bin/fixlat -i eth0 -p 8080 -r 5
+sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
 ```
 
 ---

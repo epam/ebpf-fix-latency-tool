@@ -10,7 +10,7 @@ PKG       := $(shell pkg-config --cflags --libs libbpf 2>/dev/null)
 VMLINUX   := bpf/vmlinux.h
 BPFOBJ    := bpf/fixlat.bpf.o
 SKEL      := bpf/fixlat.skel.h
-USEROBJ   := user/fixlat
+USEROBJ   := user/ebpf-fix-latency-tool
 TESTOBJ   := test/test_parser_logic
 
 all: $(USEROBJ)
@@ -49,17 +49,17 @@ verify: $(BPFOBJ)
 
 clean:
 	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(USEROBJ)-static $(TESTOBJ)
-	rm -f fixlat-$(VERSION).zip fixlat-$(VERSION)/fixlat
-	rmdir fixlat-$(VERSION) 2>/dev/null || true
+	rm -f ebpf-fix-latency-tool-$(VERSION).zip ebpf-fix-latency-tool-$(VERSION)/ebpf-fix-latency-tool
+	rmdir ebpf-fix-latency-tool-$(VERSION) 2>/dev/null || true
 
 # Create distribution ZIP with version suffix
 dist: static
-	@echo "Creating distribution package: fixlat-$(VERSION).zip"
-	@mkdir -p fixlat-$(VERSION)
-	@cp $(USEROBJ)-static fixlat-$(VERSION)/fixlat
-	@chmod +x fixlat-$(VERSION)/fixlat
-	@zip -q fixlat-$(VERSION).zip fixlat-$(VERSION)/fixlat
-	@rm -rf fixlat-$(VERSION)
-	@echo "Created: fixlat-$(VERSION).zip"
+	@echo "Creating distribution package: ebpf-fix-latency-tool-$(VERSION).zip"
+	@mkdir -p ebpf-fix-latency-tool-$(VERSION)
+	@cp $(USEROBJ)-static ebpf-fix-latency-tool-$(VERSION)/ebpf-fix-latency-tool
+	@chmod +x ebpf-fix-latency-tool-$(VERSION)/ebpf-fix-latency-tool
+	@zip -q ebpf-fix-latency-tool-$(VERSION).zip ebpf-fix-latency-tool-$(VERSION)/ebpf-fix-latency-tool
+	@rm -rf ebpf-fix-latency-tool-$(VERSION)
+	@echo "Created: ebpf-fix-latency-tool-$(VERSION).zip"
 
 .PHONY: all test verify clean static dist

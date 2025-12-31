@@ -497,7 +497,7 @@ static void snapshot(int fd_stats, double elapsed_sec) {
 
 static void usage(const char *p){
     fprintf(stderr,
-        "fixlat v%s - eBPF FIX Protocol Latency Monitor\n\n"
+        "ebpf-fix-latency-tool v%s - eBPF FIX Protocol Latency Monitor\n\n"
         "Usage: %s -i <iface> [-p port] [-r seconds] [-m max] [-t timeout]\n"
         "  -i  Network interface to monitor (required)\n"
         "  -p  TCP port to watch (0 = any, default: 0)\n"
@@ -517,7 +517,7 @@ int main(int argc, char **argv)
             case 'r': report_every_sec=atoi(optarg); break;
             case 'm': max_pending=(uint64_t)atoll(optarg); break;
             case 't': timeout_ns=(uint64_t)(atof(optarg) * 1e9); break;
-            case 'v': printf("fixlat v%s\n", VERSION); return 0;
+            case 'v': printf("ebpf-fix-latency-tool v%s\n", VERSION); return 0;
             default: usage(argv[0]); return 1;
         }
     }
@@ -609,7 +609,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("fixlat v%s: attached to %s (port=%u), reporting every %ds\n",
+    printf("ebpf-fix-latency-tool v%s: attached to %s (port=%u), reporting every %ds\n",
            VERSION, iface, port, report_every_sec);
     printf("Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands\n");
 

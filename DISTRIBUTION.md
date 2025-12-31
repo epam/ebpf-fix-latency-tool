@@ -46,21 +46,21 @@ sudo apt install -y libbpf-dev libelf-dev zlib1g-dev libzstd-dev
 # Build static binary
 make static
 
-# Result: user/fixlat-static (single 2.2MB binary)
+# Result: user/ebpf-fix-latency-tool-static (single 2.2MB binary)
 
 # Or create distribution ZIP (recommended)
 make dist
 
-# Result: fixlat-0.0.1.zip containing fixlat-0.0.1/fixlat
+# Result: ebpf-fix-latency-tool-0.0.1.zip containing ebpf-fix-latency-tool-0.0.1/ebpf-fix-latency-tool
 ```
 
 **Deploy to target server:**
 ```bash
 # Copy binary to target
-scp user/fixlat-static ec2-user@server:/usr/local/bin/fixlat
+scp user/ebpf-fix-latency-tool-static ec2-user@server:/usr/local/bin/ebpf-fix-latency-tool
 
 # Run (no dependencies needed!)
-sudo /usr/local/bin/fixlat -i eth0 -p 8080 -r 5
+sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
 ```
 
 **Pros:**
@@ -89,10 +89,10 @@ make
 sudo dnf install -y libbpf
 
 # Copy binary
-scp user/fixlat ec2-user@server:/usr/local/bin/fixlat
+scp user/ebpf-fix-latency-tool ec2-user@server:/usr/local/bin/ebpf-fix-latency-tool
 
 # Run
-sudo /usr/local/bin/fixlat -i eth0 -p 8080 -r 5
+sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
 ```
 
 **Pros:**
@@ -127,29 +127,29 @@ Amazon Linux 2023 has all these enabled by default.
 1. **Build distribution package on CI/build server:**
    ```bash
    make dist
-   # Creates: fixlat-0.0.1.zip
+   # Creates: ebpf-fix-latency-tool-0.0.1.zip
    ```
 
 2. **Deploy to target:**
    ```bash
    # Extract
-   unzip fixlat-0.0.1.zip
-   sudo cp fixlat-0.0.1/fixlat /usr/local/bin/
+   unzip ebpf-fix-latency-tool-0.0.1.zip
+   sudo cp ebpf-fix-latency-tool-0.0.1/ebpf-fix-latency-tool /usr/local/bin/
 
    # Run
-   sudo /usr/local/bin/fixlat -i eth0 -p 8080 -r 5
+   sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
    ```
 
-4. **Optional: Create systemd service:**
+3. **Optional: Create systemd service:**
    ```bash
-   cat > /etc/systemd/system/fixlat.service <<EOF
+   cat > /etc/systemd/system/ebpf-fix-latency-tool.service <<EOF
    [Unit]
-   Description=FIX Protocol Latency Monitor
+   Description=eBPF FIX Protocol Latency Monitor
    After=network.target
 
    [Service]
    Type=simple
-   ExecStart=/usr/local/bin/fixlat -i eth0 -p 8080 -r 5
+   ExecStart=/usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
    Restart=always
    User=root
 
@@ -158,8 +158,8 @@ Amazon Linux 2023 has all these enabled by default.
    EOF
 
    sudo systemctl daemon-reload
-   sudo systemctl enable fixlat
-   sudo systemctl start fixlat
+   sudo systemctl enable ebpf-fix-latency-tool
+   sudo systemctl start ebpf-fix-latency-tool
    ```
 
 ---
