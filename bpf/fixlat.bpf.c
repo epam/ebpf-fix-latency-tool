@@ -49,13 +49,6 @@ struct {
 } egress_jump_table SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 64);
-    __type(key, __u32);
-    __type(value, __u64);
-} hist_ns SEC(".maps");
-
-struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);

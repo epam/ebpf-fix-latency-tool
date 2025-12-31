@@ -37,17 +37,16 @@ static uint64_t matched_count = 0;
 static uint64_t mismatch_count = 0;
 
 static void on_sig(int s){ (void)s; running=false; }
-static uint64_t buckets[64];
+static uint64_t histogram[64];  // Latency histogram buckets (log2 scale)
 
 // Forward declarations
 static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns);
 static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out_ts_ns);
-static void record_latency(int fd_hist, uint64_t latency_ns);
+static void record_latency(uint64_t latency_ns);
 
 // Ring buffer consumer state
 struct rb_consumer_ctx {
     struct ring_buffer *rb;
-    int fd_hist;
     bool is_ingress;
 };
 
@@ -59,14 +58,13 @@ static int handle_ingress_tag11(void *ctx, void *data, size_t len) {
 }
 
 static int handle_egress_tag11(void *ctx, void *data, size_t len) {
-    (void)len;
-    struct rb_consumer_ctx *rb_ctx = ctx;
+    (void)ctx; (void)len;
     struct tag11_with_timestamp *req = data;
 
     uint64_t inbound_ts_ns;
     if (pending_map_remove(req->ord_id, req->len, &inbound_ts_ns)) {
         uint64_t latency_ns = req->ts_ns - inbound_ts_ns;
-        record_latency(rb_ctx->fd_hist, latency_ns);
+        record_latency(latency_ns);
     } else {
         __sync_fetch_and_add(&mismatch_count, 1);
     }
@@ -131,7 +129,7 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out
 }
 
 // Record latency into log2 histogram bucket
-static void record_latency(int fd_hist, uint64_t latency_ns) {
+static void record_latency(uint64_t latency_ns) {
     if (latency_ns == 0) return;
 
     // Calculate log2 bucket
@@ -142,39 +140,26 @@ static void record_latency(int fd_hist, uint64_t latency_ns) {
         bucket++;
     }
 
-    // Increment histogram bucket
-    uint64_t count = 0;
-    if (bpf_map_lookup_elem(fd_hist, &bucket, &count) == 0) {
-        count++;
-        bpf_map_update_elem(fd_hist, &bucket, &count, BPF_ANY);
-    }
-
+    // Increment histogram bucket atomically
+    __sync_fetch_and_add(&histogram[bucket], 1);
     __sync_fetch_and_add(&matched_count, 1);
 }
 
 static uint64_t percentile_from_buckets(double p) {
     uint64_t total = 0;
-    for (int i=0;i<64;i++) total += buckets[i];
+    for (int i=0;i<64;i++) total += histogram[i];
     if (total == 0) return 0;
     uint64_t rank = (uint64_t)((p/100.0)*(double)(total-1)) + 1;
     uint64_t acc = 0;
     for (int i=0;i<64;i++) {
-        acc += buckets[i];
+        acc += histogram[i];
         if (acc >= rank) return (i==0) ? 1 : (1ULL<<i);  // Return 1ns for bucket 0
     }
     return (1ULL<<63);
 }
 
-static void snapshot(int fd_hist, int fd_stats) {
-    // Snapshot histogram buckets
-    for (uint32_t i=0;i<64;i++) {
-        uint64_t v=0;
-        if (bpf_map_lookup_elem(fd_hist, &i, &v) == 0) {
-            buckets[i]=v;
-        } else {
-            buckets[i]=0;
-        }
-    }
+static void snapshot(int fd_stats) {
+    // Histogram is already in userspace (histogram[] array), no need to snapshot it
 
     // Read per-CPU stats and aggregate
     uint32_t z=0;
@@ -224,10 +209,8 @@ static void snapshot(int fd_hist, int fd_stats) {
     uint64_t p99  = percentile_from_buckets(99.0);
     uint64_t p999 = percentile_from_buckets(99.9);
 
-    uint64_t matched=0; for (int i=0;i<64;i++) matched += buckets[i];
-
     printf("[fixlat-kfifo] matched=%llu inbound=%llu outbound=%llu mismatch=%llu  p50=%lluns p90=%lluns p99=%lluns p99.9=%lluns\n",
-        (unsigned long long)matched,
+        (unsigned long long)matched_count,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
         (unsigned long long)st.tag11_mismatch,
@@ -353,12 +336,11 @@ int main(int argc, char **argv)
 
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
 
-    int fd_hist  = bpf_map__fd(skel->maps.hist_ns);
     int fd_stats = bpf_map__fd(skel->maps.stats_map);
 
     // Set up ring buffer consumers
-    struct rb_consumer_ctx ingress_ctx = {.fd_hist = fd_hist, .is_ingress = true};
-    struct rb_consumer_ctx egress_ctx = {.fd_hist = fd_hist, .is_ingress = false};
+    struct rb_consumer_ctx ingress_ctx = {.is_ingress = true};
+    struct rb_consumer_ctx egress_ctx = {.is_ingress = false};
 
     ingress_ctx.rb = ring_buffer__new(bpf_map__fd(skel->maps.ingress_tag11_rb),
                                        handle_ingress_tag11, NULL, NULL);
@@ -390,7 +372,7 @@ int main(int argc, char **argv)
 
     while (running) {
         sleep(report_every_sec);
-        snapshot(fd_hist, fd_stats);
+        snapshot(fd_stats);
     }
 
     // Wait for ring buffer threads to finish
