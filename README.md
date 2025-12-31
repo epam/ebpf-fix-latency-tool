@@ -268,6 +268,14 @@ GPL (required for eBPF programs)
 
 ## Troubleshooting
 
+### "eBPF not available" or permission errors
+**Cause**: Tool was run without sudo/root privileges.
+
+**Solution**: eBPF programs require CAP_BPF or root privileges. Always run with sudo:
+```bash
+sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
+```
+
 ### "Exclusivity flag on, cannot modify" errors on startup
 Harmless. TC clsact qdisc already exists on interface. The program continues successfully.
 
