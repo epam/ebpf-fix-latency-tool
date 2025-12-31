@@ -38,7 +38,13 @@ static uint64_t ingress_events_received = 0;
 static uint64_t egress_events_received = 0;
 
 static void on_sig(int s){ (void)s; running=false; }
-static uint64_t histogram[64];  // Latency histogram buckets (log2 scale)
+
+// HDR histogram: linear buckets for fine-grained measurement
+// Bucket width: 100ns, covering 0-10ms with 100,000 buckets
+#define BUCKET_WIDTH_NS 100
+#define MAX_LATENCY_NS 10000000  // 10ms
+#define NUM_BUCKETS (MAX_LATENCY_NS / BUCKET_WIDTH_NS)
+static uint64_t histogram[NUM_BUCKETS];  // 100k buckets = ~800KB
 
 // Forward declarations
 static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns);
@@ -114,34 +120,60 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out
     return false;
 }
 
-// Record latency into log2 histogram bucket
+// Record latency into HDR histogram
 static void record_latency(uint64_t latency_ns) {
     if (latency_ns == 0) return;
 
-    // Calculate log2 bucket
-    uint32_t bucket = 0;
-    uint64_t val = latency_ns;
-    while (val > 1 && bucket < 63) {
-        val >>= 1;
-        bucket++;
-    }
+    // Calculate bucket index (100ns resolution)
+    uint64_t bucket = latency_ns / BUCKET_WIDTH_NS;
 
-    // Increment histogram bucket
+    // Cap at max bucket
+    if (bucket >= NUM_BUCKETS)
+        bucket = NUM_BUCKETS - 1;
+
     histogram[bucket]++;
     matched_count++;
 }
 
 static uint64_t percentile_from_buckets(double p) {
     uint64_t total = 0;
-    for (int i=0;i<64;i++) total += histogram[i];
+    for (uint64_t i = 0; i < NUM_BUCKETS; i++)
+        total += histogram[i];
+
     if (total == 0) return 0;
-    uint64_t rank = (uint64_t)((p/100.0)*(double)(total-1)) + 1;
-    uint64_t acc = 0;
-    for (int i=0;i<64;i++) {
-        acc += histogram[i];
-        if (acc >= rank) return (i==0) ? 1 : (1ULL<<i);  // Return 1ns for bucket 0
+
+    // Special cases for MIN (p=0.0) and MAX (p=100.0)
+    if (p <= 0.0) {
+        // Find first non-empty bucket
+        for (uint64_t i = 0; i < NUM_BUCKETS; i++) {
+            if (histogram[i] > 0)
+                return (i * BUCKET_WIDTH_NS) + (BUCKET_WIDTH_NS / 2);
+        }
+        return 0;
     }
-    return (1ULL<<63);
+
+    if (p >= 100.0) {
+        // Find last non-empty bucket
+        for (uint64_t i = NUM_BUCKETS; i > 0; i--) {
+            if (histogram[i - 1] > 0)
+                return ((i - 1) * BUCKET_WIDTH_NS) + (BUCKET_WIDTH_NS / 2);
+        }
+        return 0;
+    }
+
+    // Normal percentile calculation
+    uint64_t rank = (uint64_t)((p / 100.0) * (double)(total - 1)) + 1;
+    uint64_t acc = 0;
+
+    for (uint64_t i = 0; i < NUM_BUCKETS; i++) {
+        acc += histogram[i];
+        if (acc >= rank) {
+            // Return the midpoint of the bucket in nanoseconds
+            return (i * BUCKET_WIDTH_NS) + (BUCKET_WIDTH_NS / 2);
+        }
+    }
+
+    return MAX_LATENCY_NS;
 }
 
 static void snapshot(int fd_stats) {
@@ -171,21 +203,45 @@ static void snapshot(int fd_stats) {
         }
     }
 
-    uint64_t p50  = percentile_from_buckets(50.0);
-    uint64_t p90  = percentile_from_buckets(90.0);
-    uint64_t p99  = percentile_from_buckets(99.0);
-    uint64_t p999 = percentile_from_buckets(99.9);
+    uint64_t p0    = percentile_from_buckets(0.0);     // MIN
+    uint64_t p50   = percentile_from_buckets(50.0);
+    uint64_t p90   = percentile_from_buckets(90.0);
+    uint64_t p99   = percentile_from_buckets(99.0);
+    uint64_t p999  = percentile_from_buckets(99.9);
+    uint64_t p9999 = percentile_from_buckets(99.99);
+    uint64_t p99999= percentile_from_buckets(99.999);
+    uint64_t p100  = percentile_from_buckets(100.0);  // MAX
+
+    // Helper macro to print latency with appropriate unit
+    #define PRINT_LAT(label, val) do { \
+        if ((val) >= 1000) \
+            printf(label "=%.3fus ", (val) / 1000.0); \
+        else \
+            printf(label "=%lluns ", (unsigned long long)(val)); \
+    } while(0)
 
     // Main stats line
-    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu | p50=%lluns p90=%lluns p99=%lluns p99.9=%lluns\n",
+    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu\n",
         (unsigned long long)matched_count,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
-        (unsigned long long)mismatch_count,
-        (unsigned long long)p50,
-        (unsigned long long)p90,
-        (unsigned long long)p99,
-        (unsigned long long)p999);
+        (unsigned long long)mismatch_count);
+
+    // Latency percentiles
+    printf("[latency] ");
+    PRINT_LAT("min", p0);
+    PRINT_LAT("p50", p50);
+    PRINT_LAT("p90", p90);
+    PRINT_LAT("p99", p99);
+    PRINT_LAT("p99.9", p999);
+    PRINT_LAT("p99.99", p9999);
+    PRINT_LAT("p99.999", p99999);
+    if (p100 >= 1000)
+        printf("max=%.3fus\n", p100 / 1000.0);
+    else
+        printf("max=%lluns\n", (unsigned long long)p100);
+
+    #undef PRINT_LAT
 
     // Traffic stats
     printf("[traffic] hooks: ingress=%llu egress=%llu | scanned: ingress=%llu egress=%llu\n",
