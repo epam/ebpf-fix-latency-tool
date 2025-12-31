@@ -40,6 +40,13 @@ static uint64_t mismatch_count = 0;
 static uint64_t ingress_events_received = 0;
 static uint64_t egress_events_received = 0;
 
+// Pending map tracking and eviction
+static uint64_t pending_count = 0;
+static uint64_t max_pending = 65536;
+static uint64_t timeout_ns = 500000000ULL;  // 500ms default
+static uint64_t stale_evicted = 0;
+static uint64_t forced_evicted = 0;
+
 static void on_sig(int s){ (void)s; running=false; }
 
 static struct termios orig_termios;
@@ -49,6 +56,8 @@ static bool termios_saved = false;
 static void dump_cumulative_histogram(void);
 static void reset_cumulative_histogram(void);
 static void show_keyboard_help(void);
+static void cleanup_stale_entries(struct timespec *now);
+static bool evict_oldest_entry(void);
 
 // Set terminal to raw mode for non-blocking keyboard input
 static void enable_raw_mode(void) {
@@ -138,6 +147,37 @@ static uint32_t hash_tag11(const char *key, uint8_t len) {
 
 // Add inbound tag 11 to pending map
 static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns) {
+    // If at limit, try to make room by evicting stale entries
+    if (pending_count >= max_pending) {
+        uint64_t cutoff_ns = ts_ns - timeout_ns;
+        uint64_t evicted = 0;
+
+        // Quick scan for stale entries
+        for (uint32_t i = 0; i < PENDING_MAP_SIZE; i++) {
+            struct pending_tag11 **curr = &pending_map[i];
+            while (*curr) {
+                if ((*curr)->timestamp_ns < cutoff_ns) {
+                    struct pending_tag11 *to_free = *curr;
+                    *curr = (*curr)->next;
+                    free(to_free);
+                    pending_count--;
+                    evicted++;
+                } else {
+                    curr = &(*curr)->next;
+                }
+            }
+        }
+
+        if (evicted > 0) {
+            stale_evicted += evicted;
+        }
+
+        // If STILL at limit after cleanup, evict oldest
+        if (pending_count >= max_pending) {
+            evict_oldest_entry();
+        }
+    }
+
     char key[FIXLAT_MAX_TAGVAL_LEN + 1] = {0};
     memcpy(key, ord_id, len);
     uint32_t hash = hash_tag11(key, len);
@@ -150,6 +190,7 @@ static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns) 
 
     entry->next = pending_map[hash];
     pending_map[hash] = entry;
+    pending_count++;
 }
 
 // Lookup and remove outbound tag 11 from pending map
@@ -165,10 +206,76 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out
             struct pending_tag11 *to_free = *curr;
             *curr = (*curr)->next;
             free(to_free);
+            pending_count--;
             return true;
         }
         curr = &(*curr)->next;
     }
+    return false;
+}
+
+// Evict stale entries (older than timeout) across entire hash table
+// Called during idle time every 500ms
+static void cleanup_stale_entries(struct timespec *now) {
+    uint64_t now_ns = now->tv_sec * 1000000000ULL + now->tv_nsec;
+    uint64_t cutoff_ns = now_ns - timeout_ns;
+    uint64_t evicted = 0;
+
+    for (uint32_t i = 0; i < PENDING_MAP_SIZE; i++) {
+        struct pending_tag11 **curr = &pending_map[i];
+        while (*curr) {
+            if ((*curr)->timestamp_ns < cutoff_ns) {
+                struct pending_tag11 *to_free = *curr;
+                *curr = (*curr)->next;
+                free(to_free);
+                pending_count--;
+                evicted++;
+            } else {
+                curr = &(*curr)->next;
+            }
+        }
+    }
+
+    if (evicted > 0) {
+        stale_evicted += evicted;
+    }
+}
+
+// Find and evict the single oldest entry in the entire table
+// Used as last resort when at limit and no stale entries found
+static bool evict_oldest_entry(void) {
+    uint64_t oldest_ts = UINT64_MAX;
+    uint32_t oldest_bucket = 0;
+    struct pending_tag11 *oldest_entry = NULL;
+
+    // Scan to find oldest
+    for (uint32_t i = 0; i < PENDING_MAP_SIZE; i++) {
+        struct pending_tag11 *curr = pending_map[i];
+        while (curr) {
+            if (curr->timestamp_ns < oldest_ts) {
+                oldest_ts = curr->timestamp_ns;
+                oldest_bucket = i;
+                oldest_entry = curr;
+            }
+            curr = curr->next;
+        }
+    }
+
+    if (!oldest_entry) return false;
+
+    // Remove oldest entry
+    struct pending_tag11 **curr = &pending_map[oldest_bucket];
+    while (*curr) {
+        if (*curr == oldest_entry) {
+            *curr = oldest_entry->next;
+            free(oldest_entry);
+            pending_count--;
+            forced_evicted++;
+            return true;
+        }
+        curr = &(*curr)->next;
+    }
+
     return false;
 }
 
@@ -367,6 +474,16 @@ static void snapshot(int fd_stats, double elapsed_sec) {
             (unsigned long long)st.tag11_too_long,
             (unsigned long long)st.parser_stuck);
     }
+
+    // Pending map health (show if evictions occurred or approaching limit)
+    if (stale_evicted || forced_evicted || pending_count > max_pending / 2) {
+        printf("[pending] active=%llu/%llu stale_evicted=%llu forced=%llu\n",
+            (unsigned long long)pending_count,
+            (unsigned long long)max_pending,
+            (unsigned long long)stale_evicted,
+            (unsigned long long)forced_evicted);
+    }
+
     fflush(stdout);
 
     // Reset interval histogram for next period
@@ -378,19 +495,23 @@ static void snapshot(int fd_stats, double elapsed_sec) {
 
 static void usage(const char *p){
     fprintf(stderr,
-        "Usage: %s -i <iface> [-p port] [-r seconds]\n"
+        "Usage: %s -i <iface> [-p port] [-r seconds] [-m max] [-t timeout]\n"
         "  -p  TCP port to watch (0 = any)\n"
-        "  -r  Report interval in seconds (default 5)\n", p);
+        "  -r  Report interval in seconds (default 5)\n"
+        "  -m  Maximum concurrent pending requests (default 65536)\n"
+        "  -t  Request timeout in seconds (default 0.5)\n", p);
 }
 
 int main(int argc, char **argv)
 {
     const char *iface=NULL; uint16_t port=0; int opt;
-    while ((opt=getopt(argc, argv, "i:p:r:")) != -1) {
+    while ((opt=getopt(argc, argv, "i:p:r:m:t:")) != -1) {
         switch (opt) {
             case 'i': iface=optarg; break;
             case 'p': port=(uint16_t)atoi(optarg); break;
             case 'r': report_every_sec=atoi(optarg); break;
+            case 'm': max_pending=(uint64_t)atoll(optarg); break;
+            case 't': timeout_ns=(uint64_t)(atof(optarg) * 1e9); break;
             default: usage(argv[0]); return 1;
         }
     }
@@ -492,7 +613,11 @@ int main(int argc, char **argv)
 
     // Single-threaded main loop: busy-wait poll ringbuffers + periodic stats + keyboard
     struct timespec last_report_time;
+    struct timespec last_cleanup_time;
     clock_gettime(CLOCK_MONOTONIC, &last_report_time);
+    last_cleanup_time = last_report_time;
+
+    int cleanup_interval_ms = 500;  // Run cleanup every 500ms
 
     while (running) {
         // Non-blocking poll of both ringbuffers (timeout=0 for immediate processing)
@@ -502,9 +627,19 @@ int main(int argc, char **argv)
         // Handle keyboard input
         handle_keyboard();
 
-        // Check if it's time to print stats
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
+
+        // Periodic cleanup of stale entries (separate from stats reporting)
+        int64_t cleanup_elapsed_ms = (now.tv_sec - last_cleanup_time.tv_sec) * 1000 +
+                                      (now.tv_nsec - last_cleanup_time.tv_nsec) / 1000000;
+
+        if (cleanup_elapsed_ms >= cleanup_interval_ms) {
+            cleanup_stale_entries(&now);
+            last_cleanup_time = now;
+        }
+
+        // Check if it's time to print stats
         int64_t elapsed_sec = now.tv_sec - last_report_time.tv_sec;
 
         if (elapsed_sec >= report_every_sec) {

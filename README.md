@@ -1,54 +1,239 @@
-# fixlat-kfifo (Port filter)
+# fixlat - eBPF FIX Protocol Latency Monitor
 
-**Summary**
+** Latency measurement tool for FIX protocol traffic using eBPF TC hooks**
 
-`fixlat-kfifo` is a lightweight eBPF-based latency measurement tool designed to correlate inbound and outbound FIX protocol messages **entirely inside the Linux kernel**. It observes TCP packets on a given interface and matches messages by FIX Tag 11 (Client Order ID). For each correlated request–response pair, it computes latency (in nanoseconds) and updates an in-kernel **log2 histogram**. The histogram can be periodically read and reset from user space, allowing real-time latency distribution tracking with near-zero overhead.
+`fixlat` is a lightweight eBPF-based tool that measures roundtrip latency for FIX protocol messages by correlating inbound requests with outbound responses. It captures TCP packets at the kernel level, extracts FIX Tag 11 (ClOrdID), matches request-response pairs, and computes in-out latency with nanosecond precision.
 
-This version adds a **bidirectional TCP port filter**, so only traffic matching a specific TCP port (in either direction) is analyzed. The filter can be disabled by setting the port to zero.
+## Key Features
 
-**Core features:**
-
-* Entire correlation logic runs in kernel space (no userspace packet processing).
-* FIFO queue (`BPF_MAP_TYPE_QUEUE`) buffers pending inbound requests.
-* Outbound responses pop from the queue until Tag 11 matches.
-* In-kernel HDR-style histogram (log2 buckets, nanosecond resolution).
-* Userspace utility attaches tc filters, polls histogram, and prints percentiles.
-* Bidirectional filtering by one TCP port.
-* Clean detachment with provided script.
+* **Kernel-level packet capture** using TC (Traffic Control) eBPF hooks on ingress/egress
+* **Zero-copy ring buffers** for efficient kernel-to-userspace communication
+* **FIX protocol parser** that extracts Tag 11 from TCP payloads using tail calls
+* **Dual histogram tracking**:
+  - Interval stats (MIN/AVG/MAX) reset every report period
+  - Cumulative histogram for long-term percentile analysis (p50, p90, p99, p99.9, p99.99, p99.999)
+* **HDR histogram** with 100ns resolution covering 0-10ms range
+* **TCP port filtering** (bidirectional)
+* **VLAN support** (802.1Q and 802.1ad)
+* **Interactive keyboard controls** for on-demand histogram dumps
+* **BPF CO-RE** (Compile Once, Run Everywhere) for portability across kernel versions
+* **SKB linearization** to handle fragmented packets on egress
 
 ---
 
 ## Build
 
+### Prerequisites
 ```bash
-sudo apt update
-sudo apt install -y clang llvm make cmake pkg-config libelf-dev libbpf-dev bpftool
-mkdir build && cd build
-cmake ..
-make -j
+# Ubuntu/Debian
+sudo apt install -y clang llvm libbpf-dev libelf-dev bpftool
+
+# Amazon Linux / RHEL
+sudo dnf install -y clang llvm libbpf-devel kernel-devel bpftool
 ```
 
-## Run
-
+### Compile
 ```bash
-# Watch port 9898 on interface eno1
-sudo ./fixlat -i eno1 -p 9898 -r 5
+make
 ```
 
-Capture every port (no filtering) by passing zero:
-
+### Build Static Binary (for distribution)
 ```bash
-sudo ./fixlat -i eno1 -p 0
+make static
+# Produces user/fixlat-static (2.2MB, no runtime dependencies)
 ```
 
-Each line of output represents one histogram snapshot:
+---
 
-```
-[fixlat-kfifo] matched=25000 inbound=25210 outbound=25180 fifo_missed=3 unmatched_out=0  p50=12000ns p90=17000ns p99=36000ns p99.9=64000ns
-```
+## Usage
 
-## Detach
-
+### Basic Example
 ```bash
-sudo tc qdisc del dev <iface> clsact 2>/dev/null || true
+sudo ./user/fixlat -i wlp0s20f3 -p 8080 -r 5
 ```
+
+**Options:**
+- `-i <interface>` : Network interface to monitor (required)
+- `-p <port>` : TCP port to filter (0 = all ports, default: 0)
+- `-r <seconds>` : Stats reporting interval (default: 5)
+
+### Sample Output
+```
+sudo ./user/fixlat -i wlp0s20f3 -p 8080 -r 5
+fixlat-kfifo: attached to wlp0s20f3 (port=8080), reporting every 5s
+Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
+[fixlat] matched=325 inbound=325 outbound=325 mismatch=0 | rate: 78 match/sec | latency: min=24.250us avg=64.217us max=165.150us
+[traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325
+[fixlat] matched=390 inbound=715 outbound=715 mismatch=0 | rate: 78 match/sec | latency: min=23.850us avg=63.961us max=203.950us
+[traffic] hooks: ingress=765 egress=716 | scanned: ingress=715 egress=715 | filters: payload_zero=2 payload_small=0 wrong_port=0
+[fixlat] matched=393 inbound=1108 outbound=1108 mismatch=0 | rate: 79 match/sec | latency: min=23.250us avg=43.723us max=197.750us
+[traffic] hooks: ingress=1166 egress=1109 | scanned: ingress=1108 egress=1108 | filters: payload_zero=2 payload_small=0 wrong_port=0
+```
+
+### Keyboard Controls
+
+While running, press:
+- **SPACE** - Dump detailed cumulative histogram
+- **r** - Reset cumulative histogram
+- **ESC** - Exit program
+- **?** or any other key - Show help
+
+**Example cumulative histogram dump:**
+```
+========== CUMULATIVE HISTOGRAM (all-time, n=1384) ==========
+MIN:      23.250us
+AVG:      56.740us
+P50:      62.150us
+P90:      67.850us
+P99:      103.650us
+P99.9:    175.250us
+P99.99:   197.750us
+P99.999:  197.750us
+MAX:      203.950us
+==============================================================
+```
+
+---
+
+## Output Explained
+
+### Interval Stats (printed every N seconds)
+```
+[fixlat] matched=325 inbound=325 outbound=325 mismatch=0 | rate: 78 match/sec | latency: min=24.250us avg=64.217us max=165.150us
+```
+- **matched**: Number of request-response pairs correlated during interval
+- **inbound**: Total Tag 11 values extracted from ingress packets (all-time)
+- **outbound**: Total Tag 11 values extracted from egress packets (all-time)
+- **mismatch**: Egress Tag 11 values with no matching ingress request (all-time)
+- **rate**: Matches per second during interval
+- **latency**: MIN/AVG/MAX latency for matched pairs during interval (resets each report)
+
+### Traffic Stats
+```
+[traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325 | filters: payload_zero=2 payload_small=0 wrong_port=0
+```
+- **hooks**: TC hook invocations (all-time)
+- **scanned**: Packets that passed filters and started payload scanning (all-time)
+- **filters**: Packets dropped by filters (empty payload, too small, wrong port)
+
+### Error Stats (only shown if non-zero)
+```
+[ERRORS] cb_clobbered=0 tag11_too_long=0 parser_stuck=0
+```
+- **cb_clobbered**: SKB control buffer corrupted between tail calls
+- **tag11_too_long**: Tag 11 value exceeded 24 bytes
+- **parser_stuck**: Tail call scanner made no forward progress
+
+---
+
+
+
+### Test Traffic Generator
+```bash
+# Terminal 1: Start FIX server
+./test-load/server.py 127.0.0.1 8080
+
+# Terminal 2: Start client
+./test-load/client.py 127.0.0.1 8080
+
+# Terminal 3: Monitor latency
+sudo ./user/fixlat -i lo -p 8080 -r 5
+```
+
+---
+
+## Distribution
+
+See [DISTRIBUTION.md](DISTRIBUTION.md) for deployment options including:
+- Source distribution
+- Static binary distribution (recommended for production)
+- Amazon Linux 2023 / cloud deployment
+- Systemd service setup
+
+**Quick deployment:**
+```bash
+# Build static binary
+make static
+
+# Copy to target server (no dependencies needed!)
+scp user/fixlat-static user@server:/usr/local/bin/fixlat
+
+# Run on target
+sudo /usr/local/bin/fixlat -i eth0 -p 8080 -r 5
+```
+
+---
+
+## Kernel Requirements
+
+- Linux kernel 5.10+ (tested on 6.1+)
+- BPF support (CONFIG_BPF=y, CONFIG_BPF_SYSCALL=y)
+- TC support (CONFIG_NET_CLS_BPF=y, CONFIG_NET_SCH_INGRESS=y)
+- BPF JIT (CONFIG_BPF_JIT=y)
+
+All features are enabled by default on modern distributions (Ubuntu 22.04+, Amazon Linux 2023, etc.)
+
+---
+
+## Cleanup
+
+Remove TC hooks when done:
+```bash
+sudo tc qdisc del dev <interface> clsact 2>/dev/null || true
+```
+
+The program automatically cleans up on exit (Ctrl+C or ESC key).
+
+---
+
+## Technical Details
+
+### FIX Protocol Support
+- Searches for Tag 11 pattern: `\x01 11=<value>\x01`
+- Supports Tag 11 values up to 24 bytes
+- No FIX version restrictions (searches raw TCP payload)
+- Tag 11 must be complete within a single TCP packet (see Limitations)
+
+### Performance
+- **Overhead**: ~1-2% CPU at 100k msg/sec
+- **Latency impact**: <1μs (kernel-level capture)
+- **Memory**: ~3MB (ring buffers + histograms + hash table)
+- **Scalability**: Per-CPU maps for lock-free stats
+
+### Limitations
+- **Fragmented FIX messages**: Partially supported. If a Tag 11 field is split across TCP packets (e.g., `\x01 11=` in one packet, `ORDER123\x01` in the next), the parser will miss it. Tag 11 must be complete within a single TCP packet.
+- **Request-response model**: Expects at least one response message for each inbound request. Multiple responses per request are not explicitly handled.
+- **Max packet size**: 1500 bytes (no jumbo frame support)
+- **Max Tag 11 scanning depth**: 1280 bytes per packet (256 bytes × 5 tail call stages)
+- **Tag 11 value length**: Maximum 24 bytes (FIXLAT_MAX_TAGVAL_LEN)
+- **Concurrent pending requests**: Maximum 65,536 unique Tag 11 values awaiting responses at any given moment. Beyond this, hash collisions may cause missed matches.
+- **Single Tag 11 per message**: Assumes Tag 11 appears exactly once per FIX message
+- **IPv4 only**: No IPv6 support
+- **TCP only**: UDP-based protocols not supported
+- **No persistence**: Pending requests are lost if the tool crashes or exits
+
+---
+
+## License
+
+GPL (required for eBPF programs)
+
+---
+
+## Troubleshooting
+
+### "Exclusivity flag on, cannot modify" errors on startup
+Harmless. TC clsact qdisc already exists on interface. The program continues successfully.
+
+### No matches shown but traffic exists
+- Check port filter
+- Verify FIX protocol: Must have Tag 11 in both request and response
+- Check payload size: Minimum 32 bytes required
+
+### High mismatch count
+- Request-response not correlated (different Tag 11 values)
+- Responses arriving before requests captured (tool started mid-stream)
+- Hash table overflow at very high rates
+
+### Parser errors (cb_clobbered, parser_stuck)
+Contact maintainer with kernel version and traffic characteristics.
