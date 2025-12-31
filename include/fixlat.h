@@ -29,7 +29,6 @@ struct fixlat_stats {
     // Filter counters (why packets were dropped)
     __u64 payload_zero;         // packets with no TCP payload
     __u64 payload_too_small;    // TCP payload < 32 bytes
-    __u64 wrong_port;           // port filter mismatch
 
     // Error counters
     __u64 cb_clobbered;         // skb->cb magic marker was corrupted
@@ -38,7 +37,8 @@ struct fixlat_stats {
 };
 
 struct config {
-    __u16 watch_port; // host order; 0 = any
+    __u16 watch_port_min; // host order; 0 = any (no filtering)
+    __u16 watch_port_max; // host order; 0 = any (no filtering)
 };
 
 #endif

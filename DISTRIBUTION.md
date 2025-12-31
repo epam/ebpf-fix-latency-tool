@@ -19,7 +19,7 @@ sudo dnf install -y clang llvm libbpf-devel kernel-devel bpftool
 make
 
 # Run
-sudo ./user/fixlat -i eth0 -p 8080 -r 5
+sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
 ```
 
 **Pros:**
@@ -61,6 +61,9 @@ scp user/ebpf-fix-latency-tool-static ec2-user@server:/usr/local/bin/ebpf-fix-la
 
 # Run (no dependencies needed!)
 sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
+
+# Or with port range
+sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 12001-12010 -r 5
 ```
 
 **Pros:**
@@ -136,8 +139,11 @@ Amazon Linux 2023 has all these enabled by default.
    unzip ebpf-fix-latency-tool-0.0.1.zip
    sudo cp ebpf-fix-latency-tool-0.0.1/ebpf-fix-latency-tool /usr/local/bin/
 
-   # Run
+   # Run (single port)
    sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
+
+   # Run (port range)
+   sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 12001-12010 -r 5
    ```
 
 3. **Optional: Create systemd service:**

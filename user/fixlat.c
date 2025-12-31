@@ -427,7 +427,6 @@ static void snapshot(int fd_stats, double elapsed_sec) {
             st.egress_scan_started += percpu_stats[i].egress_scan_started;
             st.payload_zero += percpu_stats[i].payload_zero;
             st.payload_too_small += percpu_stats[i].payload_too_small;
-            st.wrong_port += percpu_stats[i].wrong_port;
             st.cb_clobbered += percpu_stats[i].cb_clobbered;
             st.tag11_too_long += percpu_stats[i].tag11_too_long;
             st.parser_stuck += percpu_stats[i].parser_stuck;
@@ -461,11 +460,10 @@ static void snapshot(int fd_stats, double elapsed_sec) {
         (unsigned long long)st.egress_scan_started);
 
     // Append filters if any non-zero
-    if (st.payload_zero || st.payload_too_small || st.wrong_port) {
-        printf(" | filters: payload_zero=%llu payload_small=%llu wrong_port=%llu",
+    if (st.payload_zero || st.payload_too_small) {
+        printf(" | filters: payload_zero=%llu payload_small=%llu",
             (unsigned long long)st.payload_zero,
-            (unsigned long long)st.payload_too_small,
-            (unsigned long long)st.wrong_port);
+            (unsigned long long)st.payload_too_small);
     }
     printf("\n");
 
@@ -495,12 +493,37 @@ static void snapshot(int fd_stats, double elapsed_sec) {
     mismatch_count = 0;
 }
 
+// Parse port range from string (e.g., "8080" or "12001-12010")
+// Returns: 0 on success, -1 on error
+static int parse_port_range(const char *str, uint16_t *min, uint16_t *max) {
+    char *dash = strchr(str, '-');
+
+    if (dash) {
+        // Port range format: "12001-12010"
+        *dash = '\0';  // Split string
+        *min = (uint16_t)atoi(str);
+        *max = (uint16_t)atoi(dash + 1);
+
+        if (*min == 0 || *max == 0 || *min > *max) {
+            fprintf(stderr, "Invalid port range: %s-%s\n", str, dash + 1);
+            return -1;
+        }
+    } else {
+        // Single port format: "8080" or "0"
+        uint16_t port = (uint16_t)atoi(str);
+        *min = port;
+        *max = port;
+    }
+
+    return 0;
+}
+
 static void usage(const char *p){
     fprintf(stderr,
         "ebpf-fix-latency-tool v%s - eBPF FIX Protocol Latency Monitor\n\n"
-        "Usage: %s -i <iface> [-p port] [-r seconds] [-m max] [-t timeout]\n"
+        "Usage: %s -i <iface> [-p port|range] [-r seconds] [-m max] [-t timeout]\n"
         "  -i  Network interface to monitor (required)\n"
-        "  -p  TCP port to watch (0 = any, default: 0)\n"
+        "  -p  TCP port or range to watch (e.g., 8080 or 12001-12010, 0 = any, default: 0)\n"
         "  -r  Report interval in seconds (default: 5)\n"
         "  -m  Maximum concurrent pending requests (default: 65536)\n"
         "  -t  Request timeout in seconds (default: 0.5)\n"
@@ -509,11 +532,19 @@ static void usage(const char *p){
 
 int main(int argc, char **argv)
 {
-    const char *iface=NULL; uint16_t port=0; int opt;
+    const char *iface=NULL;
+    uint16_t port_min=0, port_max=0;
+    int opt;
+
     while ((opt=getopt(argc, argv, "i:p:r:m:t:v")) != -1) {
         switch (opt) {
             case 'i': iface=optarg; break;
-            case 'p': port=(uint16_t)atoi(optarg); break;
+            case 'p':
+                if (parse_port_range(optarg, &port_min, &port_max) != 0) {
+                    usage(argv[0]);
+                    return 1;
+                }
+                break;
             case 'r': report_every_sec=atoi(optarg); break;
             case 'm': max_pending=(uint64_t)atoll(optarg); break;
             case 't': timeout_ns=(uint64_t)(atof(optarg) * 1e9); break;
@@ -532,7 +563,8 @@ int main(int argc, char **argv)
 
     __u32 z=0;
     struct config cfg = {0};
-    cfg.watch_port = port;
+    cfg.watch_port_min = port_min;
+    cfg.watch_port_max = port_max;
     if (bpf_map_update_elem(bpf_map__fd(skel->maps.cfg_map), &z, &cfg, BPF_ANY) != 0) {
         fprintf(stderr, "Failed to update config map\n");
         return 1;
@@ -609,8 +641,17 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("ebpf-fix-latency-tool v%s: attached to %s (port=%u), reporting every %ds\n",
-           VERSION, iface, port, report_every_sec);
+    // Print startup message with appropriate port display
+    if (port_min == 0 && port_max == 0) {
+        printf("ebpf-fix-latency-tool v%s: attached to %s (port=any), reporting every %ds\n",
+               VERSION, iface, report_every_sec);
+    } else if (port_min == port_max) {
+        printf("ebpf-fix-latency-tool v%s: attached to %s (port=%u), reporting every %ds\n",
+               VERSION, iface, port_min, report_every_sec);
+    } else {
+        printf("ebpf-fix-latency-tool v%s: attached to %s (port=%u-%u), reporting every %ds\n",
+               VERSION, iface, port_min, port_max, report_every_sec);
+    }
     printf("Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands\n");
 
     // Enable raw mode for keyboard input

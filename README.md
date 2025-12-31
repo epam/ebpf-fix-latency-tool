@@ -59,13 +59,29 @@ sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
 
 **Options:**
 - `-i <interface>` : Network interface to monitor (required)
-- `-p <port>` : TCP port to filter (0 = all ports, default: 0)
+- `-p <port|range>` : TCP port or range to filter (e.g., `8080` or `12001-12010`, `0` = all ports, default: 0)
 - `-r <seconds>` : Stats reporting interval (default: 5)
 - `-m <max>` : Maximum concurrent pending requests (default: 65536)
 - `-t <seconds>` : Request timeout in seconds (default: 0.5)
 - `-v` : Show version and exit
 
+**Port filtering examples:**
+```bash
+# Single port
+sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080
+
+# Port range (12001-12010)
+sudo ./user/ebpf-fix-latency-tool -i eth0 -p 12001-12010
+
+# All ports (no filtering)
+sudo ./user/ebpf-fix-latency-tool -i eth0 -p 0
+# or simply omit -p flag
+sudo ./user/ebpf-fix-latency-tool -i eth0
+```
+
 ### Sample Output
+
+**Single port:**
 ```
 sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
 ebpf-fix-latency-tool v0.0.1: attached to wlp0s20f3 (port=8080), reporting every 5s
@@ -73,9 +89,18 @@ Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
 [fixlat] matched=325 inbound=325 outbound=325 mismatch=0 | rate: 78 match/sec | latency: min=24.250us avg=64.217us max=165.150us
 [traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325
 [fixlat] matched=390 inbound=715 outbound=715 mismatch=0 | rate: 78 match/sec | latency: min=23.850us avg=63.961us max=203.950us
-[traffic] hooks: ingress=765 egress=716 | scanned: ingress=715 egress=715 | filters: payload_zero=2 payload_small=0 wrong_port=0
+[traffic] hooks: ingress=765 egress=716 | scanned: ingress=715 egress=715 | filters: payload_zero=2 payload_small=0
 [fixlat] matched=393 inbound=1108 outbound=1108 mismatch=0 | rate: 79 match/sec | latency: min=23.250us avg=43.723us max=197.750us
-[traffic] hooks: ingress=1166 egress=1109 | scanned: ingress=1108 egress=1108 | filters: payload_zero=2 payload_small=0 wrong_port=0
+[traffic] hooks: ingress=1166 egress=1109 | scanned: ingress=1108 egress=1108 | filters: payload_zero=2 payload_small=0
+```
+
+**Port range:**
+```
+sudo ./user/ebpf-fix-latency-tool -i eth0 -p 12001-12010 -r 5
+ebpf-fix-latency-tool v0.0.1: attached to eth0 (port=12001-12010), reporting every 5s
+Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
+[fixlat] matched=412 inbound=412 outbound=412 mismatch=0 | rate: 82 match/sec | latency: min=18.350us avg=52.100us max=124.850us
+[traffic] hooks: ingress=413 egress=412 | scanned: ingress=412 egress=412
 ```
 
 ### Keyboard Controls
@@ -118,11 +143,11 @@ MAX:      203.950us
 
 ### Traffic Stats
 ```
-[traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325 | filters: payload_zero=2 payload_small=0 wrong_port=0
+[traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325 | filters: payload_zero=2 payload_small=0
 ```
 - **hooks**: TC hook invocations (all-time)
 - **scanned**: Packets that passed filters and started payload scanning (all-time)
-- **filters**: Packets dropped by filters (empty payload, too small, wrong port)
+- **filters**: Packets dropped by filters (empty payload, too small)
 
 ### Error Stats (only shown if non-zero)
 ```

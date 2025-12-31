@@ -237,18 +237,24 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
         return TC_ACT_OK;
     }
 
-    // Port filtering
+    // Port filtering (range-based)
     struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
     if (!cfg)
         return TC_ACT_OK;
 
-    if (cfg->watch_port != 0) {
+    // If port range is configured (both min and max are non-zero), filter
+    if (cfg->watch_port_min != 0 || cfg->watch_port_max != 0) {
         __u16 sport = bpf_ntohs(tcp->source);
         __u16 dport = bpf_ntohs(tcp->dest);
-        if (!(sport == cfg->watch_port || dport == cfg->watch_port)) {
-            if (st) stat_inc(&st->wrong_port);
+
+        bool in_range = false;
+        if (sport >= cfg->watch_port_min && sport <= cfg->watch_port_max)
+            in_range = true;
+        if (dport >= cfg->watch_port_min && dport <= cfg->watch_port_max)
+            in_range = true;
+
+        if (!in_range)
             return TC_ACT_OK;
-        }
     }
 
     // Track packets that pass all filters and start scanning
