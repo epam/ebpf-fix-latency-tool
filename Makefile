@@ -28,6 +28,11 @@ $(SKEL): $(BPFOBJ)
 $(USEROBJ): user/fixlat.c $(SKEL)
 	$(CC) $(CFLAGS) -Ibpf -Iinclude user/fixlat.c -o $@ $(PKG)
 
+# Static build for distribution (bundles libbpf)
+static: user/fixlat.c $(SKEL)
+	$(CC) $(CFLAGS) -Ibpf -Iinclude user/fixlat.c -o $(USEROBJ)-static \
+		-static -lbpf -lelf -lz -lzstd
+
 $(TESTOBJ): test/test_parser_logic.c include/fixlat.h
 	$(CC) $(CFLAGS) -Iinclude test/test_parser_logic.c -o $@
 
@@ -42,6 +47,6 @@ verify: $(BPFOBJ)
 	@sudo rm -rf /sys/fs/bpf/fixlat_verify
 
 clean:
-	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(TESTOBJ)
+	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(USEROBJ)-static $(TESTOBJ)
 
-.PHONY: all test verify clean
+.PHONY: all test verify clean static
