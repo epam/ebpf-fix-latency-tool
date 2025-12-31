@@ -170,109 +170,61 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
     return TC_ACT_OK;
 }
 
-static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_table)
+static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_table, bool is_ingress)
 {
     __u32 z = 0;
     struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
-    if (st) stat_inc(&st->hook_called);
 
+    // On egress, payload may be in SKB fragments (not linear buffer)
+    // Pull entire packet into linear buffer so we can access payload
+    if (!is_ingress && skb->len > 0) {
+        bpf_skb_pull_data(skb, skb->len);
+    }
+
+    // Load data pointers AFTER potential linearization
     void *data_start = (void *)(long)skb->data;
     void *data_end   = (void *)(long)skb->data_end;
 
-    // Debug: store skb->protocol (L3 protocol) for debugging
-    if (st) st->mac_len_seen = bpf_ntohs(skb->protocol);
+    // Parse Ethernet header
+    struct ethhdr *eth = (struct ethhdr *)data_start;
+    if ((void *)(eth + 1) > data_end)
+        return TC_ACT_OK;
 
-    __u16 proto = bpf_ntohs(skb->protocol);
+    __u16 proto = bpf_ntohs(eth->h_proto);
+    void *ptr = (void *)(eth + 1);
 
-    void *ptr = data_start;
-    struct iphdr *ip = NULL;
-
-    /*
-     * Key idea:
-     * - On loopback, TC often gives you L3 directly: skb->protocol == ETH_P_IP and ptr==IP header.
-     * - On normal NICs, ptr usually starts with Ethernet header and skb->protocol is still set,
-     *   but we can safely parse Ethernet+VLAN when proto is not ETH_P_IP.
-     */
-    if (proto == ETH_P_IP) {
-        // Likely L3 at ptr already (loopback case)
-        ip = (struct iphdr *)ptr;
-    } else {
-        // Assume Ethernet framing present
-        struct ethhdr *eth = (struct ethhdr *)ptr;
-        if ((void *)(eth + 1) > data_end) {
-            if (st) stat_inc(&st->eth_truncated);
+    // Handle VLAN tag if present
+    if (proto == ETH_P_8021Q || proto == ETH_P_8021AD) {
+        struct vlan_hdr *vh = (struct vlan_hdr *)ptr;
+        if ((void *)(vh + 1) > data_end)
             return TC_ACT_OK;
-        }
-
-        if (st) stat_inc(&st->parsed_with_eth);
-
-        proto = bpf_ntohs(eth->h_proto);
-        ptr = (void *)(eth + 1);
-
-        // Handle single VLAN tag (common). If you need QinQ, you can loop 2 times.
-        if (proto == ETH_P_8021Q || proto == ETH_P_8021AD) {
-            struct vlan_hdr *vh = (struct vlan_hdr *)ptr;
-            if ((void *)(vh + 1) > data_end) {
-                if (st) stat_inc(&st->eth_truncated);
-                return TC_ACT_OK;
-            }
-            proto = bpf_ntohs(vh->h_vlan_encapsulated_proto);
-            ptr = (void *)(vh + 1);
-        }
-
-        if (proto != ETH_P_IP) {
-            if (st) stat_inc(&st->not_ipv4);
-            return TC_ACT_OK;
-        }
-
-        ip = (struct iphdr *)ptr;
+        proto = bpf_ntohs(vh->h_vlan_encapsulated_proto);
+        ptr = (void *)(vh + 1);
     }
 
-    // Need at least minimal IPv4 header
-    if ((void *)(ip + 1) > data_end) {
-        if (st) stat_inc(&st->ip_truncated);
+    if (proto != ETH_P_IP)
         return TC_ACT_OK;
-    }
 
-    // Optional sanity: make sure it's really IPv4
-    if (ip->version != 4) {
-        if (st) stat_inc(&st->not_ipv4);
+    // Parse IP header
+    struct iphdr *ip = (struct iphdr *)ptr;
+    if ((void *)(ip + 1) > data_end)
         return TC_ACT_OK;
-    }
 
-    if (st) st->ip_proto_seen = ip->protocol;
-
-    if (ip->protocol != IPPROTO_TCP) {
-        if (st) stat_inc(&st->not_tcp);
+    if (ip->version != 4 || ip->protocol != IPPROTO_TCP)
         return TC_ACT_OK;
-    }
 
     __u32 ihl = (__u32)ip->ihl * 4;
-    if (ihl < sizeof(*ip)) {
-        if (st) stat_inc(&st->ip_truncated);
+    if (ihl < sizeof(*ip) || (void *)ip + ihl > data_end)
         return TC_ACT_OK;
-    }
-    // Make sure full IP header is in bounds
-    if ((void *)ip + ihl > data_end) {
-        if (st) stat_inc(&st->ip_truncated);
-        return TC_ACT_OK;
-    }
 
+    // Parse TCP header
     struct tcphdr *tcp = (struct tcphdr *)((__u8 *)ip + ihl);
-    if ((void *)(tcp + 1) > data_end) {
-        if (st) stat_inc(&st->tcp_truncated);
+    if ((void *)(tcp + 1) > data_end)
         return TC_ACT_OK;
-    }
 
     __u32 doff = (__u32)tcp->doff * 4;
-    if (doff < sizeof(*tcp)) {
-        if (st) stat_inc(&st->tcp_truncated);
+    if (doff < sizeof(*tcp) || (void *)tcp + doff > data_end)
         return TC_ACT_OK;
-    }
-    if ((void *)tcp + doff > data_end) {
-        if (st) stat_inc(&st->tcp_truncated);
-        return TC_ACT_OK;
-    }
 
     __u8 *payload = (__u8 *)tcp + doff;
 
@@ -288,7 +240,7 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
         return TC_ACT_OK;
     }
 
-    // Verify FIX protocol prefix safely (avoid unaligned u32 load)
+    // Verify FIX protocol prefix "8=FI"
     __u32 prefix = 0;
     __builtin_memcpy(&prefix, payload, sizeof(prefix));
     if (prefix != FIX_BEGIN_STRING_PREFIX) {
@@ -310,7 +262,13 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
         }
     }
 
-    if (st) stat_inc(&st->total_packets);
+    // Track packets that pass all filters and start scanning
+    if (st) {
+        if (is_ingress)
+            stat_inc(&st->ingress_scan_started);
+        else
+            stat_inc(&st->egress_scan_started);
+    }
 
     // Initialize scan state
     skb->cb[CB_MAGIC]      = CB_MAGIC_MARKER;
@@ -325,14 +283,20 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
 SEC("tc")
 int handle_ingress_headers(struct __sk_buff *skb)
 {
-    return validate_and_scan(skb, &ingress_jump_table);
+    __u32 z = 0;
+    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+    if (st) stat_inc(&st->ingress_hook_called);
+    return validate_and_scan(skb, &ingress_jump_table, true);
 }
 
 // Entry point - validates TCP headers and initializes egress scanning
 SEC("tc")
 int handle_egress_headers(struct __sk_buff *skb)
 {
-    return validate_and_scan(skb, &egress_jump_table);
+    __u32 z = 0;
+    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+    if (st) stat_inc(&st->egress_hook_called);
+    return validate_and_scan(skb, &egress_jump_table, false);
 }
 
 // Ingress payload scanning tail calls

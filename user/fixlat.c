@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <net/if.h>
-#include <pthread.h>
+#include <time.h>
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -30,11 +30,12 @@ struct pending_tag11 {
 // Simple hash table for pending inbound tag 11s
 #define PENDING_MAP_SIZE 65536
 static struct pending_tag11 *pending_map[PENDING_MAP_SIZE];
-static pthread_mutex_t pending_map_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Userspace stats
 static uint64_t matched_count = 0;
 static uint64_t mismatch_count = 0;
+static uint64_t ingress_events_received = 0;
+static uint64_t egress_events_received = 0;
 
 static void on_sig(int s){ (void)s; running=false; }
 static uint64_t histogram[64];  // Latency histogram buckets (log2 scale)
@@ -44,15 +45,11 @@ static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns);
 static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out_ts_ns);
 static void record_latency(uint64_t latency_ns);
 
-// Ring buffer consumer state
-struct rb_consumer_ctx {
-    struct ring_buffer *rb;
-    bool is_ingress;
-};
 
 static int handle_ingress_tag11(void *ctx, void *data, size_t len) {
     (void)ctx; (void)len;
     struct tag11_with_timestamp *req = data;
+    ingress_events_received++;
     pending_map_add(req->ord_id, req->len, req->ts_ns);
     return 0;
 }
@@ -60,24 +57,18 @@ static int handle_ingress_tag11(void *ctx, void *data, size_t len) {
 static int handle_egress_tag11(void *ctx, void *data, size_t len) {
     (void)ctx; (void)len;
     struct tag11_with_timestamp *req = data;
+    egress_events_received++;
 
     uint64_t inbound_ts_ns;
     if (pending_map_remove(req->ord_id, req->len, &inbound_ts_ns)) {
         uint64_t latency_ns = req->ts_ns - inbound_ts_ns;
         record_latency(latency_ns);
     } else {
-        __sync_fetch_and_add(&mismatch_count, 1);
+        mismatch_count++;
     }
     return 0;
 }
 
-static void *rb_poll_thread(void *arg) {
-    struct rb_consumer_ctx *ctx = arg;
-    while (running) {
-        ring_buffer__poll(ctx->rb, 100); // 100ms timeout
-    }
-    return NULL;
-}
 
 // Simple hash function for tag 11 strings
 static uint32_t hash_tag11(const char *key, uint8_t len) {
@@ -99,10 +90,8 @@ static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns) 
     memcpy(entry->key, key, sizeof(key));
     entry->timestamp_ns = ts_ns;
 
-    pthread_mutex_lock(&pending_map_lock);
     entry->next = pending_map[hash];
     pending_map[hash] = entry;
-    pthread_mutex_unlock(&pending_map_lock);
 }
 
 // Lookup and remove outbound tag 11 from pending map
@@ -111,7 +100,6 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out
     memcpy(key, ord_id, len);
     uint32_t hash = hash_tag11(key, len);
 
-    pthread_mutex_lock(&pending_map_lock);
     struct pending_tag11 **curr = &pending_map[hash];
     while (*curr) {
         if (memcmp((*curr)->key, key, len) == 0 && (*curr)->key[len] == '\0') {
@@ -119,12 +107,10 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out
             struct pending_tag11 *to_free = *curr;
             *curr = (*curr)->next;
             free(to_free);
-            pthread_mutex_unlock(&pending_map_lock);
             return true;
         }
         curr = &(*curr)->next;
     }
-    pthread_mutex_unlock(&pending_map_lock);
     return false;
 }
 
@@ -140,9 +126,9 @@ static void record_latency(uint64_t latency_ns) {
         bucket++;
     }
 
-    // Increment histogram bucket atomically
-    __sync_fetch_and_add(&histogram[bucket], 1);
-    __sync_fetch_and_add(&matched_count, 1);
+    // Increment histogram bucket
+    histogram[bucket]++;
+    matched_count++;
 }
 
 static uint64_t percentile_from_buckets(double p) {
@@ -170,37 +156,19 @@ static void snapshot(int fd_stats) {
     if (bpf_map_lookup_elem(fd_stats, &z, percpu_stats) == 0) {
         // Aggregate stats from all CPUs
         for (int i = 0; i < nr_cpus; i++) {
-            st.hook_called += percpu_stats[i].hook_called;
             st.inbound_total += percpu_stats[i].inbound_total;
             st.outbound_total += percpu_stats[i].outbound_total;
-            st.matched_latency += percpu_stats[i].matched_latency;
-            st.tag11_mismatch += percpu_stats[i].tag11_mismatch;
-            st.cb_clobbered += percpu_stats[i].cb_clobbered;
-            st.tag11_too_long += percpu_stats[i].tag11_too_long;
-            st.parser_stuck += percpu_stats[i].parser_stuck;
-            st.eth_truncated += percpu_stats[i].eth_truncated;
-            st.ip_truncated += percpu_stats[i].ip_truncated;
-            st.tcp_truncated += percpu_stats[i].tcp_truncated;
-            st.not_ipv4 += percpu_stats[i].not_ipv4;
-            st.not_tcp += percpu_stats[i].not_tcp;
+            st.ingress_hook_called += percpu_stats[i].ingress_hook_called;
+            st.egress_hook_called += percpu_stats[i].egress_hook_called;
+            st.ingress_scan_started += percpu_stats[i].ingress_scan_started;
+            st.egress_scan_started += percpu_stats[i].egress_scan_started;
             st.payload_zero += percpu_stats[i].payload_zero;
             st.payload_too_small += percpu_stats[i].payload_too_small;
             st.not_fix_protocol += percpu_stats[i].not_fix_protocol;
             st.wrong_port += percpu_stats[i].wrong_port;
-            st.total_packets += percpu_stats[i].total_packets;
-            st.parsed_loopback += percpu_stats[i].parsed_loopback;
-            st.parsed_with_eth += percpu_stats[i].parsed_with_eth;
-            // Take last non-zero values
-            if (percpu_stats[i].ip_proto_seen != 0)
-                st.ip_proto_seen = percpu_stats[i].ip_proto_seen;
-            if (percpu_stats[i].mac_len_seen != 0)
-                st.mac_len_seen = percpu_stats[i].mac_len_seen;
-            if (percpu_stats[i].first_8_bytes != 0)
-                st.first_8_bytes = percpu_stats[i].first_8_bytes;
-            if (percpu_stats[i].ihl_seen != 0)
-                st.ihl_seen = percpu_stats[i].ihl_seen;
-            if (percpu_stats[i].doff_seen != 0)
-                st.doff_seen = percpu_stats[i].doff_seen;
+            st.cb_clobbered += percpu_stats[i].cb_clobbered;
+            st.tag11_too_long += percpu_stats[i].tag11_too_long;
+            st.parser_stuck += percpu_stats[i].parser_stuck;
         }
     }
 
@@ -209,41 +177,40 @@ static void snapshot(int fd_stats) {
     uint64_t p99  = percentile_from_buckets(99.0);
     uint64_t p999 = percentile_from_buckets(99.9);
 
-    printf("[fixlat-kfifo] matched=%llu inbound=%llu outbound=%llu mismatch=%llu  p50=%lluns p90=%lluns p99=%lluns p99.9=%lluns\n",
+    // Main stats line
+    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu | p50=%lluns p90=%lluns p99=%lluns p99.9=%lluns\n",
         (unsigned long long)matched_count,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
-        (unsigned long long)st.tag11_mismatch,
+        (unsigned long long)mismatch_count,
         (unsigned long long)p50,
         (unsigned long long)p90,
         (unsigned long long)p99,
         (unsigned long long)p999);
-    printf("[DEBUG] hook_called=%llu total_pkts=%llu parsed_loopback=%llu parsed_with_eth=%llu ip_proto=%llu mac_len=%llu\n",
-        (unsigned long long)st.hook_called,
-        (unsigned long long)st.total_packets,
-        (unsigned long long)st.parsed_loopback,
-        (unsigned long long)st.parsed_with_eth,
-        (unsigned long long)st.ip_proto_seen,
-        (unsigned long long)st.mac_len_seen);
-    printf("[PACKET] first_8_bytes=0x%016llx ihl=%llu doff=%llu\n",
-        (unsigned long long)st.first_8_bytes,
-        (unsigned long long)st.ihl_seen,
-        (unsigned long long)st.doff_seen);
-    printf("[FILTER] eth_trunc=%llu ip_trunc=%llu tcp_trunc=%llu not_ipv4=%llu not_tcp=%llu\n",
-        (unsigned long long)st.eth_truncated,
-        (unsigned long long)st.ip_truncated,
-        (unsigned long long)st.tcp_truncated,
-        (unsigned long long)st.not_ipv4,
-        (unsigned long long)st.not_tcp);
-    printf("[FILTER] payload_zero=%llu payload_small=%llu not_fix=%llu wrong_port=%llu\n",
-        (unsigned long long)st.payload_zero,
-        (unsigned long long)st.payload_too_small,
-        (unsigned long long)st.not_fix_protocol,
-        (unsigned long long)st.wrong_port);
-    printf("[ERROR] cb_clobbered=%llu tag11_too_long=%llu parser_stuck=%llu\n",
-        (unsigned long long)st.cb_clobbered,
-        (unsigned long long)st.tag11_too_long,
-        (unsigned long long)st.parser_stuck);
+
+    // Traffic stats
+    printf("[traffic] hooks: ingress=%llu egress=%llu | scanned: ingress=%llu egress=%llu\n",
+        (unsigned long long)st.ingress_hook_called,
+        (unsigned long long)st.egress_hook_called,
+        (unsigned long long)st.ingress_scan_started,
+        (unsigned long long)st.egress_scan_started);
+
+    // Filters (only show if non-zero)
+    if (st.payload_zero || st.payload_too_small || st.not_fix_protocol || st.wrong_port) {
+        printf("[filters] payload_zero=%llu payload_small=%llu not_fix=%llu wrong_port=%llu\n",
+            (unsigned long long)st.payload_zero,
+            (unsigned long long)st.payload_too_small,
+            (unsigned long long)st.not_fix_protocol,
+            (unsigned long long)st.wrong_port);
+    }
+
+    // Errors (only show if non-zero)
+    if (st.cb_clobbered || st.tag11_too_long || st.parser_stuck) {
+        printf("[ERRORS] cb_clobbered=%llu tag11_too_long=%llu parser_stuck=%llu\n",
+            (unsigned long long)st.cb_clobbered,
+            (unsigned long long)st.tag11_too_long,
+            (unsigned long long)st.parser_stuck);
+    }
     fflush(stdout);
 }
 
@@ -339,49 +306,46 @@ int main(int argc, char **argv)
     int fd_stats = bpf_map__fd(skel->maps.stats_map);
 
     // Set up ring buffer consumers
-    struct rb_consumer_ctx ingress_ctx = {.is_ingress = true};
-    struct rb_consumer_ctx egress_ctx = {.is_ingress = false};
-
-    ingress_ctx.rb = ring_buffer__new(bpf_map__fd(skel->maps.ingress_tag11_rb),
-                                       handle_ingress_tag11, NULL, NULL);
-    if (!ingress_ctx.rb) {
+    struct ring_buffer *ingress_rb = ring_buffer__new(bpf_map__fd(skel->maps.ingress_tag11_rb),
+                                                        handle_ingress_tag11, NULL, NULL);
+    if (!ingress_rb) {
         fprintf(stderr, "Failed to create ingress ring buffer\n");
         return 1;
     }
 
-    egress_ctx.rb = ring_buffer__new(bpf_map__fd(skel->maps.egress_tag11_rb),
-                                      handle_egress_tag11, &egress_ctx, NULL);
-    if (!egress_ctx.rb) {
+    struct ring_buffer *egress_rb = ring_buffer__new(bpf_map__fd(skel->maps.egress_tag11_rb),
+                                                       handle_egress_tag11, NULL, NULL);
+    if (!egress_rb) {
         fprintf(stderr, "Failed to create egress ring buffer\n");
-        return 1;
-    }
-
-    // Start ring buffer polling threads
-    pthread_t ingress_thread, egress_thread;
-    if (pthread_create(&ingress_thread, NULL, rb_poll_thread, &ingress_ctx) != 0) {
-        fprintf(stderr, "Failed to create ingress thread\n");
-        return 1;
-    }
-    if (pthread_create(&egress_thread, NULL, rb_poll_thread, &egress_ctx) != 0) {
-        fprintf(stderr, "Failed to create egress thread\n");
         return 1;
     }
 
     printf("fixlat-kfifo: attached to %s (port=%u), reporting every %ds\n",
            iface, port, report_every_sec);
 
+    // Single-threaded main loop: busy-wait poll ringbuffers + periodic stats
+    struct timespec last_report_time;
+    clock_gettime(CLOCK_MONOTONIC, &last_report_time);
+
     while (running) {
-        sleep(report_every_sec);
-        snapshot(fd_stats);
+        // Non-blocking poll of both ringbuffers (timeout=0 for immediate processing)
+        ring_buffer__poll(ingress_rb, 0);
+        ring_buffer__poll(egress_rb, 0);
+
+        // Check if it's time to print stats
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        int64_t elapsed_sec = now.tv_sec - last_report_time.tv_sec;
+
+        if (elapsed_sec >= report_every_sec) {
+            snapshot(fd_stats);
+            last_report_time = now;
+        }
     }
 
-    // Wait for ring buffer threads to finish
-    pthread_join(ingress_thread, NULL);
-    pthread_join(egress_thread, NULL);
-
     // Clean up ring buffers
-    ring_buffer__free(ingress_ctx.rb);
-    ring_buffer__free(egress_ctx.rb);
+    ring_buffer__free(ingress_rb);
+    ring_buffer__free(egress_rb);
 
     bpf_tc_detach(&ing, &ing_o);
     bpf_tc_detach(&egr, &egr_o);
