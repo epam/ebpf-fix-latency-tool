@@ -5,10 +5,15 @@
 
 /* Network constants not in vmlinux.h */
 #define ETH_P_IP    0x0800
+#define ETH_P_8021Q  0x8100
+#define ETH_P_8021AD 0x88A8
+
 #define IPPROTO_TCP 6
 #define TC_ACT_OK   0
-/* ASCII control characters */
-#define SOH         0x01  /* Start of Header */
+
+
+// FIX tag delimiter
+#define SOH         0x01
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -28,7 +33,6 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 20); // 1Mb
 } egress_tag11_rb SEC(".maps");
-
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
@@ -173,50 +177,76 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
     return TC_ACT_OK;
 }
 
-// Shared header validation and scanning initialization
 static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_table)
 {
-    // Increment hook_called FIRST - before any filtering
     __u32 z = 0;
     struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
     if (st) stat_inc(&st->hook_called);
 
-    __u8 *data_start = (__u8 *)(long)skb->data;
-    __u8 *data_end   = (__u8 *)(long)skb->data_end;
+    void *data_start = (void *)(long)skb->data;
+    void *data_end   = (void *)(long)skb->data_end;
 
-    // Debug: capture first 8 bytes of packet
-    if (st && data_start + 8 <= data_end) {
-        __u64 *first = (__u64 *)data_start;
-        st->first_8_bytes = *first;
-    }
-
-    // Debug: store skb->protocol for debugging
+    // Debug: store skb->protocol (L3 protocol) for debugging
     if (st) st->mac_len_seen = bpf_ntohs(skb->protocol);
 
-    struct iphdr *ip;
+    __u16 proto = bpf_ntohs(skb->protocol);
 
-    // In TC context, even loopback has Ethernet framing - always parse it
-    struct ethhdr *eth = (void *)data_start;
-    if ((void *)(eth + 1) > (void *)data_end) {
-        if (st) stat_inc(&st->eth_truncated);
-        return TC_ACT_OK;
-    }
+    void *ptr = data_start;
+    struct iphdr *ip = NULL;
 
-    // Check if this is IPv4
-    if (eth->h_proto == bpf_htons(ETH_P_IP)) {
-        if (st) stat_inc(&st->parsed_with_eth);
-        ip = (void *)(eth + 1);
+    /*
+     * Key idea:
+     * - On loopback, TC often gives you L3 directly: skb->protocol == ETH_P_IP and ptr==IP header.
+     * - On normal NICs, ptr usually starts with Ethernet header and skb->protocol is still set,
+     *   but we can safely parse Ethernet+VLAN when proto is not ETH_P_IP.
+     */
+    if (proto == ETH_P_IP) {
+        // Likely L3 at ptr already (loopback case)
+        ip = (struct iphdr *)ptr;
     } else {
-        // Not IPv4
-        if (st) stat_inc(&st->not_ipv4);
-        return TC_ACT_OK;
+        // Assume Ethernet framing present
+        struct ethhdr *eth = (struct ethhdr *)ptr;
+        if ((void *)(eth + 1) > data_end) {
+            if (st) stat_inc(&st->eth_truncated);
+            return TC_ACT_OK;
+        }
+
+        if (st) stat_inc(&st->parsed_with_eth);
+
+        proto = bpf_ntohs(eth->h_proto);
+        ptr = (void *)(eth + 1);
+
+        // Handle single VLAN tag (common). If you need QinQ, you can loop 2 times.
+        if (proto == ETH_P_8021Q || proto == ETH_P_8021AD) {
+            struct vlan_hdr *vh = (struct vlan_hdr *)ptr;
+            if ((void *)(vh + 1) > data_end) {
+                if (st) stat_inc(&st->eth_truncated);
+                return TC_ACT_OK;
+            }
+            proto = bpf_ntohs(vh->h_vlan_encapsulated_proto);
+            ptr = (void *)(vh + 1);
+        }
+
+        if (proto != ETH_P_IP) {
+            if (st) stat_inc(&st->not_ipv4);
+            return TC_ACT_OK;
+        }
+
+        ip = (struct iphdr *)ptr;
     }
-    if ((void *)(ip + 1) > (void *)data_end) {
+
+    // Need at least minimal IPv4 header
+    if ((void *)(ip + 1) > data_end) {
         if (st) stat_inc(&st->ip_truncated);
         return TC_ACT_OK;
     }
 
-    // Store the protocol value for debugging
+    // Optional sanity: make sure it's really IPv4
+    if (ip->version != 4) {
+        if (st) stat_inc(&st->not_ipv4);
+        return TC_ACT_OK;
+    }
+
     if (st) st->ip_proto_seen = ip->protocol;
 
     if (ip->protocol != IPPROTO_TCP) {
@@ -224,45 +254,51 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
         return TC_ACT_OK;
     }
 
-    __u32 ihl = ip->ihl * 4;
-    if (st) st->ihl_seen = ihl;
-    if (ihl < sizeof(*ip))
+    __u32 ihl = (__u32)ip->ihl * 4;
+    if (ihl < sizeof(*ip)) {
+        if (st) stat_inc(&st->ip_truncated);
         return TC_ACT_OK;
+    }
+    // Make sure full IP header is in bounds
+    if ((void *)ip + ihl > data_end) {
+        if (st) stat_inc(&st->ip_truncated);
+        return TC_ACT_OK;
+    }
 
-    struct tcphdr *tcp = (void *)((__u8 *)ip + ihl);
-    if ((void *)(tcp + 1) > (void *)data_end) {
+    struct tcphdr *tcp = (struct tcphdr *)((__u8 *)ip + ihl);
+    if ((void *)(tcp + 1) > data_end) {
         if (st) stat_inc(&st->tcp_truncated);
         return TC_ACT_OK;
     }
 
-    __u32 doff = tcp->doff * 4;
-    if (st) st->doff_seen = doff;
+    __u32 doff = (__u32)tcp->doff * 4;
     if (doff < sizeof(*tcp)) {
+        if (st) stat_inc(&st->tcp_truncated);
+        return TC_ACT_OK;
+    }
+    if ((void *)tcp + doff > data_end) {
         if (st) stat_inc(&st->tcp_truncated);
         return TC_ACT_OK;
     }
 
     __u8 *payload = (__u8 *)tcp + doff;
-    if (payload > data_end) {
-        if (st) stat_inc(&st->tcp_truncated);
-        return TC_ACT_OK;
-    }
 
     // Empty TCP payload (pure ACKs, keepalives, etc.)
-    if (payload >= data_end) {
+    if ((void *)payload >= data_end) {
         if (st) stat_inc(&st->payload_zero);
         return TC_ACT_OK;
     }
 
     // FIX messages must be at least 32 bytes
-    if (payload + 32 > data_end) {
+    if ((void *)payload + 32 > data_end) {
         if (st) stat_inc(&st->payload_too_small);
         return TC_ACT_OK;
     }
 
-    // Verify FIX protocol prefix "8=FI"
-    __u32 *prefix = (__u32 *)payload;
-    if (*prefix != FIX_BEGIN_STRING_PREFIX) {
+    // Verify FIX protocol prefix safely (avoid unaligned u32 load)
+    __u32 prefix = 0;
+    __builtin_memcpy(&prefix, payload, sizeof(prefix));
+    if (prefix != FIX_BEGIN_STRING_PREFIX) {
         if (st) stat_inc(&st->not_fix_protocol);
         return TC_ACT_OK;
     }
@@ -272,7 +308,6 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
     if (!cfg)
         return TC_ACT_OK;
 
-    // Bidirectional TCP port filter (0 = any)
     if (cfg->watch_port != 0) {
         __u16 sport = bpf_ntohs(tcp->source);
         __u16 dport = bpf_ntohs(tcp->dest);
@@ -285,13 +320,13 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
     if (st) stat_inc(&st->total_packets);
 
     // Initialize scan state
-    skb->cb[CB_MAGIC] = CB_MAGIC_MARKER;
+    skb->cb[CB_MAGIC]      = CB_MAGIC_MARKER;
     skb->cb[CB_SCAN_START] = 0;
 
-    // Start scanning via tail call
     bpf_tail_call(skb, jump_table, 1);
     return TC_ACT_OK;
 }
+
 
 // Entry point - validates TCP headers and initializes ingress scanning
 SEC("tc")
