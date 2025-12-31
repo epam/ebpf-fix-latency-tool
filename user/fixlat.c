@@ -164,7 +164,6 @@ static void snapshot(int fd_stats) {
             st.egress_scan_started += percpu_stats[i].egress_scan_started;
             st.payload_zero += percpu_stats[i].payload_zero;
             st.payload_too_small += percpu_stats[i].payload_too_small;
-            st.not_fix_protocol += percpu_stats[i].not_fix_protocol;
             st.wrong_port += percpu_stats[i].wrong_port;
             st.cb_clobbered += percpu_stats[i].cb_clobbered;
             st.tag11_too_long += percpu_stats[i].tag11_too_long;
@@ -196,11 +195,10 @@ static void snapshot(int fd_stats) {
         (unsigned long long)st.egress_scan_started);
 
     // Filters (only show if non-zero)
-    if (st.payload_zero || st.payload_too_small || st.not_fix_protocol || st.wrong_port) {
-        printf("[filters] payload_zero=%llu payload_small=%llu not_fix=%llu wrong_port=%llu\n",
+    if (st.payload_zero || st.payload_too_small || st.wrong_port) {
+        printf("[filters] payload_zero=%llu payload_small=%llu wrong_port=%llu\n",
             (unsigned long long)st.payload_zero,
             (unsigned long long)st.payload_too_small,
-            (unsigned long long)st.not_fix_protocol,
             (unsigned long long)st.wrong_port);
     }
 

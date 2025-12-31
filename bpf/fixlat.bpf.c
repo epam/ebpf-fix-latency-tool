@@ -58,9 +58,6 @@ struct {
 
 static const __u32 TAG11 = ((__u32)SOH << 24) | ((__u32)'1' << 16) | ((__u32)'1' << 8) | ((__u32)'=');
 
-/* FIX protocol BeginString tag starts with "8=FI" - as 32-bit for direct memory read (little-endian) */
-static const __u32 FIX_BEGIN_STRING_PREFIX = ((__u32)'8' << 0) | ((__u32)'=' << 8) | ((__u32)'F' << 16) | ((__u32)'I' << 24);
-
 
 
 static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
@@ -234,17 +231,9 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
         return TC_ACT_OK;
     }
 
-    // FIX messages must be at least 32 bytes
+    // Skip very small payloads (unlikely to contain meaningful FIX data)
     if ((void *)payload + 32 > data_end) {
         if (st) stat_inc(&st->payload_too_small);
-        return TC_ACT_OK;
-    }
-
-    // Verify FIX protocol prefix "8=FI"
-    __u32 prefix = 0;
-    __builtin_memcpy(&prefix, payload, sizeof(prefix));
-    if (prefix != FIX_BEGIN_STRING_PREFIX) {
-        if (st) stat_inc(&st->not_fix_protocol);
         return TC_ACT_OK;
     }
 

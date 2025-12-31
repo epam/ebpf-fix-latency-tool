@@ -28,8 +28,7 @@ struct fixlat_stats {
 
     // Filter counters (why packets were dropped)
     __u64 payload_zero;         // packets with no TCP payload
-    __u64 payload_too_small;    // TCP payload < 32 bytes (too small for FIX)
-    __u64 not_fix_protocol;     // TCP payload doesn't start with "8=FI"
+    __u64 payload_too_small;    // TCP payload < 32 bytes
     __u64 wrong_port;           // port filter mismatch
 
     // Error counters
