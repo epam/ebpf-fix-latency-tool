@@ -11,6 +11,9 @@
 #include <sys/resource.h>
 #include <net/if.h>
 #include <time.h>
+#include <termios.h>
+#include <fcntl.h>
+#include <poll.h>
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -39,14 +42,63 @@ static uint64_t egress_events_received = 0;
 
 static void on_sig(int s){ (void)s; running=false; }
 
+static struct termios orig_termios;
+static bool termios_saved = false;
+
+// Forward declarations
+static void dump_cumulative_histogram(void);
+static void reset_cumulative_histogram(void);
+static void show_keyboard_help(void);
+
+// Set terminal to raw mode for non-blocking keyboard input
+static void enable_raw_mode(void) {
+    if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) return;
+    termios_saved = true;
+
+    struct termios raw = orig_termios;
+    raw.c_lflag &= ~(ECHO | ICANON);  // Disable echo and canonical mode
+    raw.c_cc[VMIN] = 0;  // Non-blocking
+    raw.c_cc[VTIME] = 0;
+
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+}
+
+// Restore original terminal settings
+static void disable_raw_mode(void) {
+    if (termios_saved)
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+}
+
+// Handle keyboard input
+static void handle_keyboard(void) {
+    char c;
+    if (read(STDIN_FILENO, &c, 1) == 1) {
+        if (c == ' ') {
+            dump_cumulative_histogram();
+        } else if (c == 'r' || c == 'R') {
+            reset_cumulative_histogram();
+        } else if (c == 27) {  // ESC
+            running = false;
+        } else {
+            // Any other key shows help
+            show_keyboard_help();
+        }
+    }
+}
+
 // HDR histogram: linear buckets for fine-grained measurement
 // Bucket width: 100ns, covering 0-10ms with 100,000 buckets
 #define BUCKET_WIDTH_NS 100
 #define MAX_LATENCY_NS 10000000  // 10ms
 #define NUM_BUCKETS (MAX_LATENCY_NS / BUCKET_WIDTH_NS)
-static uint64_t histogram[NUM_BUCKETS];  // 100k buckets = ~800KB
 
-// Forward declarations
+// Dual histograms: interval (reset each report) and cumulative (long-term)
+static uint64_t interval_histogram[NUM_BUCKETS];
+static uint64_t cumulative_histogram[NUM_BUCKETS];
+static uint64_t interval_sum_ns = 0;  // For AVG calculation
+static uint64_t cumulative_sum_ns = 0;
+
+// Forward declarations for pending map functions
 static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns);
 static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out_ts_ns);
 static void record_latency(uint64_t latency_ns);
@@ -120,7 +172,7 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out
     return false;
 }
 
-// Record latency into HDR histogram
+// Record latency into both interval and cumulative histograms
 static void record_latency(uint64_t latency_ns) {
     if (latency_ns == 0) return;
 
@@ -131,14 +183,21 @@ static void record_latency(uint64_t latency_ns) {
     if (bucket >= NUM_BUCKETS)
         bucket = NUM_BUCKETS - 1;
 
-    histogram[bucket]++;
+    // Update both histograms
+    interval_histogram[bucket]++;
+    cumulative_histogram[bucket]++;
+
+    // Update sums for AVG calculation
+    interval_sum_ns += latency_ns;
+    cumulative_sum_ns += latency_ns;
+
     matched_count++;
 }
 
-static uint64_t percentile_from_buckets(double p) {
+static uint64_t percentile_from_buckets(const uint64_t *hist, double p) {
     uint64_t total = 0;
     for (uint64_t i = 0; i < NUM_BUCKETS; i++)
-        total += histogram[i];
+        total += hist[i];
 
     if (total == 0) return 0;
 
@@ -146,7 +205,7 @@ static uint64_t percentile_from_buckets(double p) {
     if (p <= 0.0) {
         // Find first non-empty bucket
         for (uint64_t i = 0; i < NUM_BUCKETS; i++) {
-            if (histogram[i] > 0)
+            if (hist[i] > 0)
                 return (i * BUCKET_WIDTH_NS) + (BUCKET_WIDTH_NS / 2);
         }
         return 0;
@@ -155,7 +214,7 @@ static uint64_t percentile_from_buckets(double p) {
     if (p >= 100.0) {
         // Find last non-empty bucket
         for (uint64_t i = NUM_BUCKETS; i > 0; i--) {
-            if (histogram[i - 1] > 0)
+            if (hist[i - 1] > 0)
                 return ((i - 1) * BUCKET_WIDTH_NS) + (BUCKET_WIDTH_NS / 2);
         }
         return 0;
@@ -166,7 +225,7 @@ static uint64_t percentile_from_buckets(double p) {
     uint64_t acc = 0;
 
     for (uint64_t i = 0; i < NUM_BUCKETS; i++) {
-        acc += histogram[i];
+        acc += hist[i];
         if (acc >= rank) {
             // Return the midpoint of the bucket in nanoseconds
             return (i * BUCKET_WIDTH_NS) + (BUCKET_WIDTH_NS / 2);
@@ -176,8 +235,70 @@ static uint64_t percentile_from_buckets(double p) {
     return MAX_LATENCY_NS;
 }
 
+// Format and print a latency value
+static void print_latency(uint64_t ns) {
+    if (ns >= 1000)
+        printf("%.3fus", ns / 1000.0);
+    else
+        printf("%lluns", (unsigned long long)ns);
+}
+
+// Dump detailed cumulative histogram
+static void dump_cumulative_histogram(void) {
+    uint64_t total = 0;
+    for (uint64_t i = 0; i < NUM_BUCKETS; i++)
+        total += cumulative_histogram[i];
+
+    if (total == 0) {
+        printf("\n[cumulative] No latency samples recorded yet\n\n");
+        return;
+    }
+
+    uint64_t avg = cumulative_sum_ns / total;
+
+    printf("\n========== CUMULATIVE HISTOGRAM (all-time, n=%llu) ==========\n", (unsigned long long)total);
+    printf("MIN:      "); print_latency(percentile_from_buckets(cumulative_histogram, 0.0)); printf("\n");
+    printf("AVG:      "); print_latency(avg); printf("\n");
+    printf("P50:      "); print_latency(percentile_from_buckets(cumulative_histogram, 50.0)); printf("\n");
+    printf("P90:      "); print_latency(percentile_from_buckets(cumulative_histogram, 90.0)); printf("\n");
+    printf("P99:      "); print_latency(percentile_from_buckets(cumulative_histogram, 99.0)); printf("\n");
+    printf("P99.9:    "); print_latency(percentile_from_buckets(cumulative_histogram, 99.9)); printf("\n");
+    printf("P99.99:   "); print_latency(percentile_from_buckets(cumulative_histogram, 99.99)); printf("\n");
+    printf("P99.999:  "); print_latency(percentile_from_buckets(cumulative_histogram, 99.999)); printf("\n");
+    printf("MAX:      "); print_latency(percentile_from_buckets(cumulative_histogram, 100.0)); printf("\n");
+    printf("==============================================================\n\n");
+    fflush(stdout);
+}
+
+// Reset cumulative histogram
+static void reset_cumulative_histogram(void) {
+    memset(cumulative_histogram, 0, sizeof(cumulative_histogram));
+    cumulative_sum_ns = 0;
+    printf("\n[reset] Cumulative histogram cleared\n\n");
+    fflush(stdout);
+}
+
+// Show keyboard help
+static void show_keyboard_help(void) {
+    printf("\n========== KEYBOARD COMMANDS ==========\n");
+    printf("SPACE   - Dump detailed cumulative histogram\n");
+    printf("r       - Reset cumulative histogram\n");
+    printf("ESC     - Exit program\n");
+    printf("?       - Show this help\n");
+    printf("=======================================\n\n");
+    fflush(stdout);
+}
+
 static void snapshot(int fd_stats) {
-    // Histogram is already in userspace (histogram[] array), no need to snapshot it
+    // Calculate interval stats (simple: MIN, AVG, MAX)
+    uint64_t interval_count = matched_count;
+    uint64_t interval_min = 0, interval_avg = 0, interval_max = 0;
+
+    if (interval_count > 0) {
+        interval_min = percentile_from_buckets(interval_histogram, 0.0);
+        interval_avg = interval_sum_ns / interval_count;
+        interval_max = percentile_from_buckets(interval_histogram, 100.0);
+    }
 
     // Read per-CPU stats and aggregate
     uint32_t z=0;
@@ -203,60 +324,39 @@ static void snapshot(int fd_stats) {
         }
     }
 
-    uint64_t p0    = percentile_from_buckets(0.0);     // MIN
-    uint64_t p50   = percentile_from_buckets(50.0);
-    uint64_t p90   = percentile_from_buckets(90.0);
-    uint64_t p99   = percentile_from_buckets(99.0);
-    uint64_t p999  = percentile_from_buckets(99.9);
-    uint64_t p9999 = percentile_from_buckets(99.99);
-    uint64_t p99999= percentile_from_buckets(99.999);
-    uint64_t p100  = percentile_from_buckets(100.0);  // MAX
-
-    // Helper macro to print latency with appropriate unit
-    #define PRINT_LAT(label, val) do { \
-        if ((val) >= 1000) \
-            printf(label "=%.3fus ", (val) / 1000.0); \
-        else \
-            printf(label "=%lluns ", (unsigned long long)(val)); \
-    } while(0)
-
-    // Main stats line
-    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu\n",
-        (unsigned long long)matched_count,
+    // Main stats line with interval latency (simple: MIN/AVG/MAX)
+    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu | latency: min=",
+        (unsigned long long)interval_count,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
         (unsigned long long)mismatch_count);
 
-    // Latency percentiles
-    printf("[latency] ");
-    PRINT_LAT("min", p0);
-    PRINT_LAT("p50", p50);
-    PRINT_LAT("p90", p90);
-    PRINT_LAT("p99", p99);
-    PRINT_LAT("p99.9", p999);
-    PRINT_LAT("p99.99", p9999);
-    PRINT_LAT("p99.999", p99999);
-    if (p100 >= 1000)
-        printf("max=%.3fus\n", p100 / 1000.0);
-    else
-        printf("max=%lluns\n", (unsigned long long)p100);
+    if (interval_count > 0) {
+        print_latency(interval_min);
+        printf(" avg=");
+        print_latency(interval_avg);
+        printf(" max=");
+        print_latency(interval_max);
+    } else {
+        printf("- avg=- max=-");
+    }
+    printf("\n");
 
-    #undef PRINT_LAT
-
-    // Traffic stats
-    printf("[traffic] hooks: ingress=%llu egress=%llu | scanned: ingress=%llu egress=%llu\n",
+    // Traffic stats with filters on same line
+    printf("[traffic] hooks: ingress=%llu egress=%llu | scanned: ingress=%llu egress=%llu",
         (unsigned long long)st.ingress_hook_called,
         (unsigned long long)st.egress_hook_called,
         (unsigned long long)st.ingress_scan_started,
         (unsigned long long)st.egress_scan_started);
 
-    // Filters (only show if non-zero)
+    // Append filters if any non-zero
     if (st.payload_zero || st.payload_too_small || st.wrong_port) {
-        printf("[filters] payload_zero=%llu payload_small=%llu wrong_port=%llu\n",
+        printf(" | filters: payload_zero=%llu payload_small=%llu wrong_port=%llu",
             (unsigned long long)st.payload_zero,
             (unsigned long long)st.payload_too_small,
             (unsigned long long)st.wrong_port);
     }
+    printf("\n");
 
     // Errors (only show if non-zero)
     if (st.cb_clobbered || st.tag11_too_long || st.parser_stuck) {
@@ -266,6 +366,12 @@ static void snapshot(int fd_stats) {
             (unsigned long long)st.parser_stuck);
     }
     fflush(stdout);
+
+    // Reset interval histogram for next period
+    memset(interval_histogram, 0, sizeof(interval_histogram));
+    interval_sum_ns = 0;
+    matched_count = 0;
+    mismatch_count = 0;
 }
 
 static void usage(const char *p){
@@ -376,8 +482,13 @@ int main(int argc, char **argv)
 
     printf("fixlat-kfifo: attached to %s (port=%u), reporting every %ds\n",
            iface, port, report_every_sec);
+    printf("Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands\n");
 
-    // Single-threaded main loop: busy-wait poll ringbuffers + periodic stats
+    // Enable raw mode for keyboard input
+    enable_raw_mode();
+    atexit(disable_raw_mode);
+
+    // Single-threaded main loop: busy-wait poll ringbuffers + periodic stats + keyboard
     struct timespec last_report_time;
     clock_gettime(CLOCK_MONOTONIC, &last_report_time);
 
@@ -385,6 +496,9 @@ int main(int argc, char **argv)
         // Non-blocking poll of both ringbuffers (timeout=0 for immediate processing)
         ring_buffer__poll(ingress_rb, 0);
         ring_buffer__poll(egress_rb, 0);
+
+        // Handle keyboard input
+        handle_keyboard();
 
         // Check if it's time to print stats
         struct timespec now;
@@ -397,7 +511,8 @@ int main(int argc, char **argv)
         }
     }
 
-    // Clean up ring buffers
+    // Clean up
+    disable_raw_mode();
     ring_buffer__free(ingress_rb);
     ring_buffer__free(egress_rb);
 
