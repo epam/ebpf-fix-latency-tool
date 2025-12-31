@@ -185,6 +185,7 @@ static void snapshot(int fd_hist, int fd_stats) {
     if (bpf_map_lookup_elem(fd_stats, &z, percpu_stats) == 0) {
         // Aggregate stats from all CPUs
         for (int i = 0; i < nr_cpus; i++) {
+            st.hook_called += percpu_stats[i].hook_called;
             st.inbound_total += percpu_stats[i].inbound_total;
             st.outbound_total += percpu_stats[i].outbound_total;
             st.matched_latency += percpu_stats[i].matched_latency;
@@ -192,7 +193,29 @@ static void snapshot(int fd_hist, int fd_stats) {
             st.cb_clobbered += percpu_stats[i].cb_clobbered;
             st.tag11_too_long += percpu_stats[i].tag11_too_long;
             st.parser_stuck += percpu_stats[i].parser_stuck;
+            st.eth_truncated += percpu_stats[i].eth_truncated;
+            st.ip_truncated += percpu_stats[i].ip_truncated;
+            st.tcp_truncated += percpu_stats[i].tcp_truncated;
+            st.not_ipv4 += percpu_stats[i].not_ipv4;
+            st.not_tcp += percpu_stats[i].not_tcp;
+            st.payload_zero += percpu_stats[i].payload_zero;
+            st.payload_too_small += percpu_stats[i].payload_too_small;
+            st.not_fix_protocol += percpu_stats[i].not_fix_protocol;
+            st.wrong_port += percpu_stats[i].wrong_port;
             st.total_packets += percpu_stats[i].total_packets;
+            st.parsed_loopback += percpu_stats[i].parsed_loopback;
+            st.parsed_with_eth += percpu_stats[i].parsed_with_eth;
+            // Take last non-zero values
+            if (percpu_stats[i].ip_proto_seen != 0)
+                st.ip_proto_seen = percpu_stats[i].ip_proto_seen;
+            if (percpu_stats[i].mac_len_seen != 0)
+                st.mac_len_seen = percpu_stats[i].mac_len_seen;
+            if (percpu_stats[i].first_8_bytes != 0)
+                st.first_8_bytes = percpu_stats[i].first_8_bytes;
+            if (percpu_stats[i].ihl_seen != 0)
+                st.ihl_seen = percpu_stats[i].ihl_seen;
+            if (percpu_stats[i].doff_seen != 0)
+                st.doff_seen = percpu_stats[i].doff_seen;
         }
     }
 
@@ -212,8 +235,29 @@ static void snapshot(int fd_hist, int fd_stats) {
         (unsigned long long)p90,
         (unsigned long long)p99,
         (unsigned long long)p999);
-    printf("[DEBUG] total_pkts=%llu cb_clobbered=%llu tag11_too_long=%llu parser_stuck=%llu\n",
+    printf("[DEBUG] hook_called=%llu total_pkts=%llu parsed_loopback=%llu parsed_with_eth=%llu ip_proto=%llu mac_len=%llu\n",
+        (unsigned long long)st.hook_called,
         (unsigned long long)st.total_packets,
+        (unsigned long long)st.parsed_loopback,
+        (unsigned long long)st.parsed_with_eth,
+        (unsigned long long)st.ip_proto_seen,
+        (unsigned long long)st.mac_len_seen);
+    printf("[PACKET] first_8_bytes=0x%016llx ihl=%llu doff=%llu\n",
+        (unsigned long long)st.first_8_bytes,
+        (unsigned long long)st.ihl_seen,
+        (unsigned long long)st.doff_seen);
+    printf("[FILTER] eth_trunc=%llu ip_trunc=%llu tcp_trunc=%llu not_ipv4=%llu not_tcp=%llu\n",
+        (unsigned long long)st.eth_truncated,
+        (unsigned long long)st.ip_truncated,
+        (unsigned long long)st.tcp_truncated,
+        (unsigned long long)st.not_ipv4,
+        (unsigned long long)st.not_tcp);
+    printf("[FILTER] payload_zero=%llu payload_small=%llu not_fix=%llu wrong_port=%llu\n",
+        (unsigned long long)st.payload_zero,
+        (unsigned long long)st.payload_too_small,
+        (unsigned long long)st.not_fix_protocol,
+        (unsigned long long)st.wrong_port);
+    printf("[ERROR] cb_clobbered=%llu tag11_too_long=%llu parser_stuck=%llu\n",
         (unsigned long long)st.cb_clobbered,
         (unsigned long long)st.tag11_too_long,
         (unsigned long long)st.parser_stuck);

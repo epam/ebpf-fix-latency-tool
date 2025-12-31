@@ -176,55 +176,98 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
 // Shared header validation and scanning initialization
 static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_table)
 {
+    // Increment hook_called FIRST - before any filtering
+    __u32 z = 0;
+    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
+    if (st) stat_inc(&st->hook_called);
+
     __u8 *data_start = (__u8 *)(long)skb->data;
     __u8 *data_end   = (__u8 *)(long)skb->data_end;
 
-    // Parse and validate TCP headers
+    // Debug: capture first 8 bytes of packet
+    if (st && data_start + 8 <= data_end) {
+        __u64 *first = (__u64 *)data_start;
+        st->first_8_bytes = *first;
+    }
+
+    // Debug: store skb->protocol for debugging
+    if (st) st->mac_len_seen = bpf_ntohs(skb->protocol);
+
+    struct iphdr *ip;
+
+    // In TC context, even loopback has Ethernet framing - always parse it
     struct ethhdr *eth = (void *)data_start;
-    if ((void *)(eth + 1) > (void *)data_end)
+    if ((void *)(eth + 1) > (void *)data_end) {
+        if (st) stat_inc(&st->eth_truncated);
         return TC_ACT_OK;
+    }
 
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
+    // Check if this is IPv4
+    if (eth->h_proto == bpf_htons(ETH_P_IP)) {
+        if (st) stat_inc(&st->parsed_with_eth);
+        ip = (void *)(eth + 1);
+    } else {
+        // Not IPv4
+        if (st) stat_inc(&st->not_ipv4);
         return TC_ACT_OK;
+    }
+    if ((void *)(ip + 1) > (void *)data_end) {
+        if (st) stat_inc(&st->ip_truncated);
+        return TC_ACT_OK;
+    }
 
-    struct iphdr *ip = (void *)(eth + 1);
-    if ((void *)(ip + 1) > (void *)data_end)
-        return TC_ACT_OK;
+    // Store the protocol value for debugging
+    if (st) st->ip_proto_seen = ip->protocol;
 
-    if (ip->protocol != IPPROTO_TCP)
+    if (ip->protocol != IPPROTO_TCP) {
+        if (st) stat_inc(&st->not_tcp);
         return TC_ACT_OK;
+    }
 
     __u32 ihl = ip->ihl * 4;
+    if (st) st->ihl_seen = ihl;
     if (ihl < sizeof(*ip))
         return TC_ACT_OK;
 
     struct tcphdr *tcp = (void *)((__u8 *)ip + ihl);
-    if ((void *)(tcp + 1) > (void *)data_end)
+    if ((void *)(tcp + 1) > (void *)data_end) {
+        if (st) stat_inc(&st->tcp_truncated);
         return TC_ACT_OK;
+    }
 
     __u32 doff = tcp->doff * 4;
-    if (doff < sizeof(*tcp))
+    if (st) st->doff_seen = doff;
+    if (doff < sizeof(*tcp)) {
+        if (st) stat_inc(&st->tcp_truncated);
         return TC_ACT_OK;
+    }
 
     __u8 *payload = (__u8 *)tcp + doff;
-    if (payload > data_end)
+    if (payload > data_end) {
+        if (st) stat_inc(&st->tcp_truncated);
         return TC_ACT_OK;
+    }
 
     // Empty TCP payload (pure ACKs, keepalives, etc.)
-    if (payload >= data_end)
+    if (payload >= data_end) {
+        if (st) stat_inc(&st->payload_zero);
         return TC_ACT_OK;
+    }
 
     // FIX messages must be at least 32 bytes
-    if (payload + 32 > data_end)
+    if (payload + 32 > data_end) {
+        if (st) stat_inc(&st->payload_too_small);
         return TC_ACT_OK;
+    }
 
     // Verify FIX protocol prefix "8=FI"
     __u32 *prefix = (__u32 *)payload;
-    if (*prefix != FIX_BEGIN_STRING_PREFIX)
+    if (*prefix != FIX_BEGIN_STRING_PREFIX) {
+        if (st) stat_inc(&st->not_fix_protocol);
         return TC_ACT_OK;
+    }
 
     // Port filtering
-    __u32 z = 0;
     struct config *cfg = bpf_map_lookup_elem(&cfg_map, &z);
     if (!cfg)
         return TC_ACT_OK;
@@ -233,11 +276,12 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
     if (cfg->watch_port != 0) {
         __u16 sport = bpf_ntohs(tcp->source);
         __u16 dport = bpf_ntohs(tcp->dest);
-        if (!(sport == cfg->watch_port || dport == cfg->watch_port))
+        if (!(sport == cfg->watch_port || dport == cfg->watch_port)) {
+            if (st) stat_inc(&st->wrong_port);
             return TC_ACT_OK;
+        }
     }
 
-    struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
     if (st) stat_inc(&st->total_packets);
 
     // Initialize scan state

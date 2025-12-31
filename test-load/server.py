@@ -44,20 +44,29 @@ def main():
 
         msg_count += 1
 
-        # Extract Tag 11 (ClOrdID)
+        # Extract Tag 11 (ClOrdID) and Tag 34 (MsgSeqNum)
         try:
             clid = data.split(b"11=")[1].split(SOH)[0]
         except Exception:
             clid = b""
+
+        try:
+            seqnum = data.split(b"34=")[1].split(SOH)[0]
+        except Exception:
+            seqnum = str(msg_count).encode()
 
         # Send ExecReport back with reversed sender/target and additional tags
         reply = (b"8=FIX.4.4" + SOH +
                  b"49=SERVER" + SOH +
                  b"56=CLIENT" + SOH +
                  b"50=traderjoe" + SOH +
+                 b"34=" + seqnum + SOH +
                  b"35=8" + SOH +
                  b"11=" + clid + SOH +
                  b"55=TSLA" + SOH +
+                 b"54=1" + SOH +         # Side=BUY
+                 b"38=10" + SOH +        # Quantity=10
+                 b"44=123.45" + SOH +    # LimitPrice=123.45
                  b"1=DogeCoin" + SOH +
                  b"100=XNAS" + SOH)
         conn.sendall(reply)
