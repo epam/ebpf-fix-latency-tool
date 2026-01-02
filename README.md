@@ -69,7 +69,7 @@ sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
 - `-r <seconds>` : Stats reporting interval (default: 5)
 - `-m <max>` : Maximum concurrent pending requests (default: 65536)
 - `-t <seconds>` : Request timeout in seconds (default: 0.5)
-- `-c <cpu>` : Pin userspace thread to CPU core (optional)
+- `-c <cpu>` : Pin userspace thread to specific CPU core for consistent measurements (optional; note: userspace thread always uses busy-spin polling)
 - `-v` : Show version and exit
 
 **Port filtering examples:**
@@ -83,7 +83,7 @@ sudo ./user/ebpf-fix-latency-tool -i eth0 -p 12001-12010
 
 **CPU pinning example:**
 ```bash
-# Pin userspace thread to CPU core 3 for consistent latency measurements
+# Pin userspace thread to CPU core 3 with busy-spin polling for lowest latency
 sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080 -c 3
 ```
 
