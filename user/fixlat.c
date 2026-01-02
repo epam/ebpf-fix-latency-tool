@@ -14,6 +14,7 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sched.h>
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -530,12 +531,13 @@ static int parse_port_range(const char *str, uint16_t *min, uint16_t *max) {
 static void usage(const char *p){
     fprintf(stderr,
         "ebpf-fix-latency-tool v%s - eBPF FIX Protocol Latency Monitor\n\n"
-        "Usage: %s -i <iface> [-p port|range] [-r seconds] [-m max] [-t timeout]\n"
+        "Usage: %s -i <iface> [-p port|range] [-r seconds] [-m max] [-t timeout] [-c cpu]\n"
         "  -i  Network interface to monitor (required)\n"
         "  -p  TCP port or range to watch (e.g., 8080 or 12001-12010, 0 = any, default: 0)\n"
         "  -r  Report interval in seconds (default: 5)\n"
         "  -m  Maximum concurrent pending requests (default: 65536)\n"
         "  -t  Request timeout in seconds (default: 0.5)\n"
+        "  -c  Pin userspace thread to CPU core (optional)\n"
         "  -v  Show version and exit\n", VERSION, p);
 }
 
@@ -543,9 +545,10 @@ int main(int argc, char **argv)
 {
     const char *iface=NULL;
     uint16_t port_min=0, port_max=0;
+    int cpu_core = -1;
     int opt;
 
-    while ((opt=getopt(argc, argv, "i:p:r:m:t:v")) != -1) {
+    while ((opt=getopt(argc, argv, "i:p:r:m:t:c:v")) != -1) {
         switch (opt) {
             case 'i': iface=optarg; break;
             case 'p':
@@ -557,11 +560,25 @@ int main(int argc, char **argv)
             case 'r': report_every_sec=atoi(optarg); break;
             case 'm': max_pending=(uint64_t)atoll(optarg); break;
             case 't': timeout_ns=(uint64_t)(atof(optarg) * 1e9); break;
+            case 'c': cpu_core=atoi(optarg); break;
             case 'v': printf("ebpf-fix-latency-tool v%s\n", VERSION); return 0;
             default: usage(argv[0]); return 1;
         }
     }
     if (!iface){ usage(argv[0]); return 1; }
+
+    // Pin to CPU core if requested
+    if (cpu_core >= 0) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(cpu_core, &cpuset);
+
+        if (sched_setaffinity(0, sizeof(cpuset), &cpuset) != 0) {
+            fprintf(stderr, "Failed to set CPU affinity to core %d: %s\n",
+                    cpu_core, strerror(errno));
+            return 1;
+        }
+    }
 
     struct rlimit rl={RLIM_INFINITY, RLIM_INFINITY}; setrlimit(RLIMIT_MEMLOCK, &rl);
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
@@ -661,6 +678,11 @@ int main(int argc, char **argv)
         printf("ebpf-fix-latency-tool v%s: attached to %s (port=%u-%u), reporting every %ds\n",
                VERSION, iface, port_min, port_max, report_every_sec);
     }
+
+    if (cpu_core >= 0) {
+        printf("Userspace thread pinned to CPU core %d\n", cpu_core);
+    }
+
     printf("Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands\n");
 
     // Enable raw mode for keyboard input
