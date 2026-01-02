@@ -515,12 +515,16 @@ static int parse_port_range(const char *str, uint16_t *min, uint16_t *max) {
         *max = (uint16_t)atoi(dash + 1);
 
         if (*min == 0 || *max == 0 || *min > *max) {
-            fprintf(stderr, "Invalid port range: %s-%s\n", str, dash + 1);
+            fprintf(stderr, "Invalid port range: %s-%s (ports must be 1-65535)\n", str, dash + 1);
             return -1;
         }
     } else {
-        // Single port format: "8080" or "0"
+        // Single port format: "8080"
         uint16_t port = (uint16_t)atoi(str);
+        if (port == 0) {
+            fprintf(stderr, "Invalid port: %s (port must be 1-65535)\n", str);
+            return -1;
+        }
         *min = port;
         *max = port;
     }
@@ -531,9 +535,9 @@ static int parse_port_range(const char *str, uint16_t *min, uint16_t *max) {
 static void usage(const char *p){
     fprintf(stderr,
         "ebpf-fix-latency-tool v%s - eBPF FIX Protocol Latency Monitor\n\n"
-        "Usage: %s -i <iface> [-p port|range] [-r seconds] [-m max] [-t timeout] [-c cpu]\n"
+        "Usage: %s -i <iface> -p <port|range> [-r seconds] [-m max] [-t timeout] [-c cpu]\n"
         "  -i  Network interface to monitor (required)\n"
-        "  -p  TCP port or range to watch (e.g., 8080 or 12001-12010, 0 = any, default: 0)\n"
+        "  -p  TCP port or range to watch (e.g., 8080 or 12001-12010) (required)\n"
         "  -r  Report interval in seconds (default: 5)\n"
         "  -m  Maximum concurrent pending requests (default: 65536)\n"
         "  -t  Request timeout in seconds (default: 0.5)\n"
@@ -566,6 +570,11 @@ int main(int argc, char **argv)
         }
     }
     if (!iface){ usage(argv[0]); return 1; }
+    if (port_min == 0 || port_max == 0) {
+        fprintf(stderr, "Error: -p <port|range> is required\n\n");
+        usage(argv[0]);
+        return 1;
+    }
 
     // Pin to CPU core if requested
     if (cpu_core >= 0) {
@@ -667,11 +676,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // Print startup message with appropriate port display
-    if (port_min == 0 && port_max == 0) {
-        printf("ebpf-fix-latency-tool v%s: attached to %s (port=any), reporting every %ds\n",
-               VERSION, iface, report_every_sec);
-    } else if (port_min == port_max) {
+    // Print startup message
+    if (port_min == port_max) {
         printf("ebpf-fix-latency-tool v%s: attached to %s (port=%u), reporting every %ds\n",
                VERSION, iface, port_min, report_every_sec);
     } else {

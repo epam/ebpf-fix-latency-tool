@@ -59,7 +59,7 @@ sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
 
 **Options:**
 - `-i <interface>` : Network interface to monitor (required)
-- `-p <port|range>` : TCP port or range to filter (e.g., `8080` or `12001-12010`, `0` = all ports, default: 0)
+- `-p <port|range>` : TCP port or range to filter (e.g., `8080` or `12001-12010`) (required)
 - `-r <seconds>` : Stats reporting interval (default: 5)
 - `-m <max>` : Maximum concurrent pending requests (default: 65536)
 - `-t <seconds>` : Request timeout in seconds (default: 0.5)
@@ -73,11 +73,6 @@ sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080
 
 # Port range (12001-12010)
 sudo ./user/ebpf-fix-latency-tool -i eth0 -p 12001-12010
-
-# All ports (no filtering)
-sudo ./user/ebpf-fix-latency-tool -i eth0 -p 0
-# or simply omit -p flag
-sudo ./user/ebpf-fix-latency-tool -i eth0
 ```
 
 **CPU pinning example:**

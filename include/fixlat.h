@@ -41,8 +41,8 @@ struct fixlat_stats {
 };
 
 struct config {
-    __u16 watch_port_min; // host order; 0 = any (no filtering)
-    __u16 watch_port_max; // host order; 0 = any (no filtering)
+    __u16 watch_port_min; // host order; 1-65535
+    __u16 watch_port_max; // host order; 1-65535
 };
 
 #endif
