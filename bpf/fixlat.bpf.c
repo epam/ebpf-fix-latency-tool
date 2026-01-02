@@ -172,13 +172,6 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
     __u32 z = 0;
     struct fixlat_stats *st = bpf_map_lookup_elem(&stats_map, &z);
 
-    // On egress, payload may be in SKB fragments (not linear buffer)
-    // Pull entire packet into linear buffer so we can access payload
-    if (!is_ingress && skb->len > 0) {
-        bpf_skb_pull_data(skb, skb->len);
-    }
-
-    // Load data pointers AFTER potential linearization
     void *data_start = (void *)(long)skb->data;
     void *data_end   = (void *)(long)skb->data_end;
 
@@ -255,6 +248,13 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
 
         if (!in_range)
             return TC_ACT_OK;
+    }
+
+    // On egress, payload may be in SKB fragments (not linear buffer)
+    // Linearize now that we know this packet needs scanning
+    if (!is_ingress && skb->len > 0) {
+        bpf_skb_pull_data(skb, skb->len);
+        // Note: data pointers are reloaded in tail call functions
     }
 
     // Track packets that pass all filters and start scanning
