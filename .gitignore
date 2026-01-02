@@ -3,6 +3,7 @@ bpf/vmlinux.h
 bpf/fixlat.bpf.o
 bpf/fixlat.skel.h
 user/fixlat
+user/fixlat-static
 user/ebpf-fix-latency-tool
 user/ebpf-fix-latency-tool-static
 bpf/*.tmp
