@@ -67,7 +67,7 @@ sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
 - `-i <interface>` : Network interface to monitor (required)
 - `-p <port|range>` : TCP port or range to filter (e.g., `8080` or `12001-12010`) (required)
 - `-r <seconds>` : Stats reporting interval (default: 5)
-- `-m <max>` : Maximum concurrent pending requests (default: 65536)
+- `-m <max>` : Maximum concurrent pending requests (default: 16384)
 - `-t <seconds>` : Request timeout in seconds (default: 0.5)
 - `-c <cpu>` : Pin userspace thread to specific CPU core for consistent measurements (optional; note: userspace thread always uses busy-spin polling)
 - `-x <milliseconds>` : Maximum latency to track in histogram (default: 100ms)
@@ -175,7 +175,7 @@ MAX:      203.950us
 
 ### Pending Map Health (shown if evictions occur or approaching limit)
 ```
-[pending] active=1234/65536 stale_evicted=15 forced=0
+[pending] active=1234/16384 stale_evicted=15 forced=0
 ```
 - **active**: Current number of pending requests / maximum allowed
 - **stale_evicted**: Requests evicted due to timeout (TTL expired)
@@ -271,7 +271,7 @@ The program automatically cleans up on exit (Ctrl+C or ESC key).
 - **Max packet size**: 1500 bytes (no jumbo frame support)
 - **Max Tag 11 scanning depth**: 1792 bytes per packet (256 bytes × 7 tail call stages)
 - **Tag 11 value length**: Maximum 24 bytes (FIXLAT_MAX_TAGVAL_LEN)
-- **Concurrent pending requests**: Maximum 65,536 unique Tag 11 values awaiting responses at any given moment (configurable via `-m`). Stale entries are automatically evicted after 500ms timeout (configurable via `-t`). When at limit, oldest entries are evicted to make room.
+- **Concurrent pending requests**: Maximum 16,384 unique Tag 11 values awaiting responses at any given moment (configurable via `-m`). Stale entries are automatically evicted after 500ms timeout (configurable via `-t`). When at limit, oldest entries are evicted to make room.
 - **IPv4 only**: No IPv6 support
 - **TCP only**: UDP-based protocols not supported
 - **64-bit architecture only**: The tool is designed for 64-bit systems (x86_64, aarch64) due to the way per-CPU metrics are collected using non-atomic 64-bit increments.

@@ -45,7 +45,7 @@ static uint64_t egress_events_received = 0;
 
 // Pending map tracking and eviction
 static uint64_t pending_count = 0;
-static uint64_t max_pending = 65536;
+static uint64_t max_pending = 16384;
 static uint64_t timeout_ns = 500000000ULL;  // 500ms default
 static uint64_t stale_evicted = 0;
 static uint64_t forced_evicted = 0;
@@ -613,7 +613,7 @@ static void usage(const char *p){
         "  -i  Network interface to monitor (required)\n"
         "  -p  TCP port or range to watch (e.g., 8080 or 12001-12010) (required)\n"
         "  -r  Report interval in seconds (default: 5)\n"
-        "  -m  Maximum concurrent pending requests (default: 65536)\n"
+        "  -m  Maximum concurrent pending requests (default: 16384)\n"
         "  -t  Request timeout in seconds (default: 0.5)\n"
         "  -c  Pin userspace thread to CPU core (optional)\n"
         "  -x  Maximum latency to track in milliseconds (default: 100)\n"
