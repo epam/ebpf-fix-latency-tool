@@ -106,7 +106,7 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
         window = (window << 8) | c;
         found_tag11_start = (window == TAG11);
         if (found_tag11_start) { // Tag 11 begins <SOH>11=
-            break; // data_offset points to byte after '='
+            break; // data_offset points to '='
         }
     }
 
