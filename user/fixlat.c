@@ -30,12 +30,23 @@ static int report_every_sec = 5;
 struct pending_tag11 {
     char key[FIXLAT_MAX_TAGVAL_LEN + 1]; // tag 11 value as string key
     uint64_t timestamp_ns;
-    struct pending_tag11 *next; // for hash table chaining
+    uint32_t hash; // precomputed bucket index
+
+    struct pending_tag11 *next; // hash table chaining
+
+    // Global age-ordered list (oldest=head). Used for O(1) eviction.
+    struct pending_tag11 *age_prev;
+    struct pending_tag11 *age_next;
 };
 
 // Simple hash table for pending inbound tag 11s
-#define PENDING_MAP_SIZE 65536
-static struct pending_tag11 *pending_map[PENDING_MAP_SIZE];
+// Size is dynamically calculated based on max_pending with 0.5 load factor
+static uint32_t pending_map_size = 0;
+static struct pending_tag11 **pending_map = NULL;
+
+// Age-ordered list of pending entries for O(1) eviction/cleanup
+static struct pending_tag11 *pending_age_head = NULL; // oldest
+static struct pending_tag11 *pending_age_tail = NULL; // newest
 
 // Userspace stats
 static uint64_t matched_count = 0;
@@ -60,7 +71,6 @@ static void dump_cumulative_histogram(void);
 static void reset_cumulative_histogram(void);
 static void show_keyboard_help(void);
 static void cleanup_stale_entries(struct timespec *now);
-static bool evict_oldest_entry(void);
 
 // Set terminal to raw mode for non-blocking keyboard input
 static void enable_raw_mode(void) {
@@ -218,59 +228,154 @@ static int handle_egress_tag11(void *ctx, void *data, size_t len) {
 }
 
 
+// Round up to next power of 2 for hash table sizing
+static uint32_t next_power_of_2(uint32_t n) {
+    if (n == 0) return 1;
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    return n + 1;
+}
+
+// Initialize pending map with size based on max_pending (0.5 load factor)
+static bool pending_map_init(uint64_t max_entries) {
+    // Load factor 0.5: table size = max_entries / 0.5 = max_entries * 2
+    uint32_t target_size = (uint32_t)(max_entries * 2);
+    pending_map_size = next_power_of_2(target_size);
+
+    pending_map = calloc(pending_map_size, sizeof(struct pending_tag11 *));
+    if (!pending_map) {
+        fprintf(stderr, "Failed to allocate pending map (%u buckets)\n", pending_map_size);
+        return false;
+    }
+
+    // Initialize age list pointers
+    pending_age_head = NULL;
+    pending_age_tail = NULL;
+    pending_count = 0;
+
+    return true;
+}
+
+// Free pending map and all entries
+static void pending_map_cleanup(void) {
+    if (!pending_map) return;
+
+    // Free all entries via age list
+    while (pending_age_head) {
+        struct pending_tag11 *next = pending_age_head->age_next;
+        free(pending_age_head);
+        pending_age_head = next;
+    }
+    pending_age_tail = NULL;
+    pending_count = 0;
+
+    // Free the bucket array
+    free(pending_map);
+    pending_map = NULL;
+    pending_map_size = 0;
+}
+
 // Simple hash function for tag 11 strings
 static uint32_t hash_tag11(const char *key, uint8_t len) {
     uint32_t hash = 5381;
     for (uint8_t i = 0; i < len; i++)
         hash = ((hash << 5) + hash) + key[i];
-    return hash % PENDING_MAP_SIZE;
+    return hash % pending_map_size;
+}
+
+// Age-list helpers
+static inline void pending_age_append(struct pending_tag11 *e) {
+    e->age_next = NULL;
+    e->age_prev = pending_age_tail;
+    if (pending_age_tail)
+        pending_age_tail->age_next = e;
+    else
+        pending_age_head = e;
+    pending_age_tail = e;
+}
+
+static inline void pending_age_remove(struct pending_tag11 *e) {
+    if (e->age_prev)
+        e->age_prev->age_next = e->age_next;
+    else
+        pending_age_head = e->age_next;
+
+    if (e->age_next)
+        e->age_next->age_prev = e->age_prev;
+    else
+        pending_age_tail = e->age_prev;
+
+    e->age_prev = NULL;
+    e->age_next = NULL;
+}
+
+// Remove a specific entry from both the hash table and age list.
+static void pending_remove_entry(struct pending_tag11 *victim) {
+    struct pending_tag11 **curr = &pending_map[victim->hash];
+    while (*curr) {
+        if (*curr == victim) {
+            *curr = victim->next;
+            pending_age_remove(victim);
+            free(victim);
+            pending_count--;
+            return;
+        }
+        curr = &(*curr)->next;
+    }
+}
+
+// Evict stale entries from the head of the age list.
+static uint64_t pending_evict_stale(uint64_t now_ns) {
+    if (timeout_ns == 0)
+        return 0;
+
+    uint64_t cutoff_ns = now_ns - timeout_ns;
+    uint64_t evicted = 0;
+
+    while (pending_age_head && pending_age_head->timestamp_ns < cutoff_ns) {
+        pending_remove_entry(pending_age_head);
+        evicted++;
+    }
+
+    if (evicted)
+        stale_evicted += evicted;
+    return evicted;
 }
 
 // Add inbound tag 11 to pending map
 static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns) {
-    // If at limit, try to make room by evicting stale entries
-    if (pending_count >= max_pending) {
-        uint64_t cutoff_ns = ts_ns - timeout_ns;
-        uint64_t evicted = 0;
+    // First evict anything stale (O(#stale) using age list)
+    pending_evict_stale(ts_ns);
 
-        // Quick scan for stale entries
-        for (uint32_t i = 0; i < PENDING_MAP_SIZE; i++) {
-            struct pending_tag11 **curr = &pending_map[i];
-            while (*curr) {
-                if ((*curr)->timestamp_ns < cutoff_ns) {
-                    struct pending_tag11 *to_free = *curr;
-                    *curr = (*curr)->next;
-                    free(to_free);
-                    pending_count--;
-                    evicted++;
-                } else {
-                    curr = &(*curr)->next;
-                }
-            }
-        }
-
-        if (evicted > 0) {
-            stale_evicted += evicted;
-        }
-
-        // If STILL at limit after cleanup, evict oldest
-        if (pending_count >= max_pending) {
-            evict_oldest_entry();
-        }
+    // If still at limit, evict oldest unclaimed entries (FIFO) until we have space.
+    while (pending_count >= max_pending && pending_age_head) {
+        pending_remove_entry(pending_age_head);
+        forced_evicted++;
     }
 
-    char key[FIXLAT_MAX_TAGVAL_LEN + 1] = {0};
-    memcpy(key, ord_id, len);
-    uint32_t hash = hash_tag11(key, len);
+    if (pending_count >= max_pending) {
+        // No space and nothing to evict (should only happen if max_pending==0)
+        return;
+    }
 
     struct pending_tag11 *entry = malloc(sizeof(*entry));
     if (!entry) return;
 
-    memcpy(entry->key, key, sizeof(key));
-    entry->timestamp_ns = ts_ns;
+    memset(entry, 0, sizeof(*entry));
+    memcpy(entry->key, ord_id, len);
+    entry->key[len] = '\0';
 
-    entry->next = pending_map[hash];
-    pending_map[hash] = entry;
+    entry->timestamp_ns = ts_ns;
+    entry->hash = hash_tag11(entry->key, len);
+
+    entry->next = pending_map[entry->hash];
+    pending_map[entry->hash] = entry;
+
+    pending_age_append(entry);
     pending_count++;
 }
 
@@ -286,6 +391,7 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out
             *out_ts_ns = (*curr)->timestamp_ns;
             struct pending_tag11 *to_free = *curr;
             *curr = (*curr)->next;
+            pending_age_remove(to_free);
             free(to_free);
             pending_count--;
             return true;
@@ -295,69 +401,11 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out
     return false;
 }
 
-// Evict stale entries (older than timeout) across entire hash table
+// Evict stale entries (older than timeout) using age list
 // Called during idle time every 500ms
 static void cleanup_stale_entries(struct timespec *now) {
     uint64_t now_ns = now->tv_sec * 1000000000ULL + now->tv_nsec;
-    uint64_t cutoff_ns = now_ns - timeout_ns;
-    uint64_t evicted = 0;
-
-    for (uint32_t i = 0; i < PENDING_MAP_SIZE; i++) {
-        struct pending_tag11 **curr = &pending_map[i];
-        while (*curr) {
-            if ((*curr)->timestamp_ns < cutoff_ns) {
-                struct pending_tag11 *to_free = *curr;
-                *curr = (*curr)->next;
-                free(to_free);
-                pending_count--;
-                evicted++;
-            } else {
-                curr = &(*curr)->next;
-            }
-        }
-    }
-
-    if (evicted > 0) {
-        stale_evicted += evicted;
-    }
-}
-
-// Find and evict the single oldest entry in the entire table
-// Used as last resort when at limit and no stale entries found
-static bool evict_oldest_entry(void) {
-    uint64_t oldest_ts = UINT64_MAX;
-    uint32_t oldest_bucket = 0;
-    struct pending_tag11 *oldest_entry = NULL;
-
-    // Scan to find oldest
-    for (uint32_t i = 0; i < PENDING_MAP_SIZE; i++) {
-        struct pending_tag11 *curr = pending_map[i];
-        while (curr) {
-            if (curr->timestamp_ns < oldest_ts) {
-                oldest_ts = curr->timestamp_ns;
-                oldest_bucket = i;
-                oldest_entry = curr;
-            }
-            curr = curr->next;
-        }
-    }
-
-    if (!oldest_entry) return false;
-
-    // Remove oldest entry
-    struct pending_tag11 **curr = &pending_map[oldest_bucket];
-    while (*curr) {
-        if (*curr == oldest_entry) {
-            *curr = oldest_entry->next;
-            free(oldest_entry);
-            pending_count--;
-            forced_evicted++;
-            return true;
-        }
-        curr = &(*curr)->next;
-    }
-
-    return false;
+    pending_evict_stale(now_ns);
 }
 
 // Record latency into both interval and cumulative histograms
@@ -680,6 +728,17 @@ int main(int argc, char **argv)
            max_latency_ns / 1e6,
            (unsigned long long)(num_buckets * sizeof(uint64_t) * 2 / 1024));
 
+    // Initialize pending map (0.5 load factor)
+    if (!pending_map_init(max_pending)) {
+        free(interval_histogram);
+        free(cumulative_histogram);
+        return 1;
+    }
+    printf("Pending map initialized: %u buckets for max %llu entries (load factor 0.5, %llu KB)\n",
+           pending_map_size,
+           (unsigned long long)max_pending,
+           (unsigned long long)(pending_map_size * sizeof(struct pending_tag11 *) / 1024));
+
     struct rlimit rl={RLIM_INFINITY, RLIM_INFINITY}; setrlimit(RLIMIT_MEMLOCK, &rl);
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
@@ -835,5 +894,11 @@ int main(int argc, char **argv)
     bpf_tc_hook_destroy(&ing);
     bpf_tc_hook_destroy(&egr);
     fixlat_bpf__destroy(skel);
+
+    // Free pending map and histograms
+    pending_map_cleanup();
+    free(interval_histogram);
+    free(cumulative_histogram);
+
     return 0;
 }
