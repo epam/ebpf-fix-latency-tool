@@ -19,6 +19,14 @@
 * **BPF CO-RE** (Compile Once, Run Everywhere) for portability across kernel versions
 * **SKB linearization** to handle fragmented packets on egress
 
+
+### Tested on
+
+eBPF logic is sensitive to verifier constraints (design and tag 11 parsing algorithm heavily influenced by eBPF verifier limitations). Tools was tested on:
+
+* Ubuntu 24.04.3 LTS (kernel 6.14.0-37-generic)
+* Amazon Linux 2 (kernel 5.10.205)
+
 ---
 
 ## Build
