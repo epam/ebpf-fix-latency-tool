@@ -51,7 +51,7 @@ make static
 # Or create distribution ZIP (recommended)
 make dist
 
-# Result: ebpf-fix-latency-tool-0.0.1.zip containing ebpf-fix-latency-tool-0.0.1/ebpf-fix-latency-tool
+# Result: ebpf-fix-latency-tool-0.0.2.zip containing ebpf-fix-latency-tool-0.0.2/ebpf-fix-latency-tool
 ```
 
 **Deploy to target server:**
@@ -130,14 +130,14 @@ Amazon Linux 2023 has all these enabled by default.
 1. **Build distribution package on CI/build server:**
    ```bash
    make dist
-   # Creates: ebpf-fix-latency-tool-0.0.1.zip
+   # Creates: ebpf-fix-latency-tool-0.0.2.zip
    ```
 
 2. **Deploy to target:**
    ```bash
    # Extract
-   unzip ebpf-fix-latency-tool-0.0.1.zip
-   sudo cp ebpf-fix-latency-tool-0.0.1/ebpf-fix-latency-tool /usr/local/bin/
+   unzip ebpf-fix-latency-tool-0.0.2.zip
+   sudo cp ebpf-fix-latency-tool-0.0.2/ebpf-fix-latency-tool /usr/local/bin/
 
    # Run (single port)
    sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5

@@ -1,6 +1,6 @@
 # ebpf-fix-latency-tool - eBPF FIX Protocol Latency Monitor
 
-**Version 0.0.1**
+**Version 0.0.2**
 
 **Latency measurement tool for FIX protocol traffic using eBPF TC hooks**
 
@@ -45,7 +45,7 @@ make static
 # Produces user/ebpf-fix-latency-tool-static (2.2MB, no runtime dependencies)
 
 make dist
-# Produces ebpf-fix-latency-tool-0.0.1.zip (versioned distribution package)
+# Produces ebpf-fix-latency-tool-0.0.2.zip (versioned distribution package)
 ```
 
 ---
@@ -84,7 +84,7 @@ sudo ./user/ebpf-fix-latency-tool -i eth0
 **Single port:**
 ```
 sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
-ebpf-fix-latency-tool v0.0.1: attached to wlp0s20f3 (port=8080), reporting every 5s
+ebpf-fix-latency-tool v0.0.2: attached to wlp0s20f3 (port=8080), reporting every 5s
 Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
 [fixlat] matched=325 inbound=325 outbound=325 mismatch=0 | rate: 78 match/sec | latency: min=24.250us avg=64.217us max=165.150us
 [traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325
@@ -97,7 +97,7 @@ Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
 **Port range:**
 ```
 sudo ./user/ebpf-fix-latency-tool -i eth0 -p 12001-12010 -r 5
-ebpf-fix-latency-tool v0.0.1: attached to eth0 (port=12001-12010), reporting every 5s
+ebpf-fix-latency-tool v0.0.2: attached to eth0 (port=12001-12010), reporting every 5s
 Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
 [fixlat] matched=412 inbound=412 outbound=412 mismatch=0 | rate: 82 match/sec | latency: min=18.350us avg=52.100us max=124.850us
 [traffic] hooks: ingress=413 egress=412 | scanned: ingress=412 egress=412
@@ -198,11 +198,11 @@ See [DISTRIBUTION.md](DISTRIBUTION.md) for deployment options including:
 make dist
 
 # Copy to target server (no dependencies needed!)
-scp ebpf-fix-latency-tool-0.0.1.zip user@server:/tmp/
+scp ebpf-fix-latency-tool-0.0.2.zip user@server:/tmp/
 
 # On target server
-unzip /tmp/ebpf-fix-latency-tool-0.0.1.zip
-sudo cp ebpf-fix-latency-tool-0.0.1/ebpf-fix-latency-tool /usr/local/bin/
+unzip /tmp/ebpf-fix-latency-tool-0.0.2.zip
+sudo cp ebpf-fix-latency-tool-0.0.2/ebpf-fix-latency-tool /usr/local/bin/
 
 # Run
 sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
