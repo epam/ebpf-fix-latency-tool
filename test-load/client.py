@@ -24,7 +24,7 @@ def main():
 
     start_time = time.time()
 
-    for i in range(10000):
+    for i in range(500000):
         clid = f"{i:08d}".encode()
         seqnum = f"{i+1}".encode()
         msg = (b"8=FIX.4.4" + SOH +
@@ -53,7 +53,7 @@ def main():
             print(f"[{i}] Sent {i} messages in {elapsed:.1f}s ({rate:.1f} msg/s)", flush=True)
 
         # Sleep 1 second between messages = 1 msg/sec
-        time.sleep(0.25)
+        time.sleep(0.01)
 
     c.close()
 
