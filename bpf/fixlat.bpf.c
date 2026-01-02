@@ -60,7 +60,7 @@ static const __u32 TAG11 = ((__u32)SOH << 24) | ((__u32)'1' << 16) | ((__u32)'1'
 
 
 
-static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field, 1); }
+static __always_inline void stat_inc(__u64 *field) { (*field)++; }
 
 
 #define CB_MAGIC        0
