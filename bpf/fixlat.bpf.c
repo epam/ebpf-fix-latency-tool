@@ -99,7 +99,7 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
     #pragma clang loop unroll(disable)
     for (int i = 0; i < PER_CALL_SCAN_DEPTH; i++, data_offset++) {
         __u8 *p = data_start + data_offset;
-        if (p + 1 > data_end)
+        if (p + 1 > data_end) // this is how verifier likes it
             return TC_ACT_OK; // end of packet (normal)
         __u8 c = *p;
 
@@ -120,7 +120,7 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
             data_offset++;
 
             __u8 *p = data_start + data_offset;
-            if (p + 1 > data_end) {
+            if (p + 1 > data_end) { // this is how verifier likes it
                 // Tag 11 value exceeded packet boundary
                 if (st) stat_inc(&st->tag11_too_long);
                 return TC_ACT_OK;
