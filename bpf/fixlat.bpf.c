@@ -262,7 +262,11 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
         }
 
         // Linearize fragmented packets so we can scan the full payload
-        bpf_skb_pull_data(skb, skb->len); // NB: skb data pointers must be reloaded after this call!
+        int ret = bpf_skb_pull_data(skb, skb->len); // NB: skb data pointers must be reloaded after this call!
+        if (ret != 0) {
+            if (st) stat_inc(&st->payload_defrag_fail);
+            return TC_ACT_OK;
+        }
     }
 
     // Track packets that pass all filters and start scanning

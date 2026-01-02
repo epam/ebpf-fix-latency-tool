@@ -38,6 +38,7 @@ struct fixlat_stats {
     __u64 cb_clobbered;         // skb->cb magic marker was corrupted
     __u64 tag11_too_long;       // tag 11 value exceeded max length
     __u64 parser_stuck;         // tail call made no progress
+    __u64 payload_defrag_fail;  // payload defragmentation failed
 };
 
 struct config {
