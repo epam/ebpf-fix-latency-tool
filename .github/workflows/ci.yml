@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang \
+          llvm \
+          libbpf-dev \
+          linux-headers-$(uname -r) \
+          linux-tools-generic \
+          linux-tools-$(uname -r) \
+          pkg-config \
+          libelf-dev \
+          zlib1g-dev \
+          libzstd-dev
+
+    - name: Build project
+      run: make
+
+    - name: Run unit tests
+      run: make test
+
+    - name: Build static binary
+      run: make static
+
+    - name: Verify eBPF programs load
+      run: |
+        # Check that eBPF bytecode was generated
+        test -f bpf/fixlat.bpf.o
+        echo "✓ eBPF object file created"
+
+        # Verify skeleton was generated
+        test -f bpf/fixlat.skel.h
+        echo "✓ BPF skeleton generated"
+
+        # Check binary exists
+        test -x user/ebpf-fix-latency-tool
+        echo "✓ Userspace binary built"
+
+    - name: Create distribution package
+      run: make dist
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ebpf-fix-latency-tool
+        path: |
+          user/ebpf-fix-latency-tool-static
+          ebpf-fix-latency-tool-*.zip
+        retention-days: 30

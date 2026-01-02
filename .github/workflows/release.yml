@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v0.0.3, v1.0.0, etc.
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Get version from tag
+      id: version
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/v}
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Verify VERSION file matches tag
+      run: |
+        FILE_VERSION=$(cat VERSION)
+        TAG_VERSION="${{ steps.version.outputs.version }}"
+        if [ "$FILE_VERSION" != "$TAG_VERSION" ]; then
+          echo "ERROR: VERSION file ($FILE_VERSION) does not match git tag ($TAG_VERSION)"
+          exit 1
+        fi
+        echo "✓ Version file matches tag: $TAG_VERSION"
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang \
+          llvm \
+          libbpf-dev \
+          linux-headers-$(uname -r) \
+          linux-tools-generic \
+          linux-tools-$(uname -r) \
+          pkg-config \
+          libelf-dev \
+          zlib1g-dev \
+          libzstd-dev
+
+    - name: Build project
+      run: make
+
+    - name: Run unit tests
+      run: make test
+
+    - name: Build static binary
+      run: make static
+
+    - name: Create distribution package
+      run: make dist
+
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Get commits since last tag
+        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        if [ -z "$PREV_TAG" ]; then
+          CHANGELOG=$(git log --pretty=format:"- %s" --no-merges)
+        else
+          CHANGELOG=$(git log --pretty=format:"- %s" --no-merges ${PREV_TAG}..HEAD)
+        fi
+
+        # Save to file for multiline output
+        echo "$CHANGELOG" > changelog.txt
+        echo "Generated changelog with $(wc -l < changelog.txt) commits"
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: Release ${{ steps.version.outputs.tag }}
+        body_path: changelog.txt
+        files: |
+          ebpf-fix-latency-tool-${{ steps.version.outputs.version }}.zip
+          user/ebpf-fix-latency-tool-static
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Release summary
+      run: |
+        echo "✅ Release ${{ steps.version.outputs.tag }} created successfully!"
+        echo "📦 Uploaded: ebpf-fix-latency-tool-${{ steps.version.outputs.version }}.zip"
+        echo "🔗 https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.tag }}"
