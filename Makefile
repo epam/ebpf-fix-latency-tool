@@ -16,8 +16,17 @@ HDRTESTOBJ := test/test_hdr_histogram
 
 all: $(USEROBJ)
 
+# Generate vmlinux.h if it doesn't exist
+# Note: vmlinux.h is committed to repo for CI (GitHub Actions lacks BTF support)
 $(VMLINUX):
+	@echo "Generating vmlinux.h from /sys/kernel/btf/vmlinux..."
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $@
+
+# Explicit target to regenerate vmlinux.h from local kernel
+vmlinux-regenerate:
+	@echo "Regenerating vmlinux.h from local kernel BTF..."
+	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $(VMLINUX)
+	@echo "✓ vmlinux.h regenerated ($(shell wc -l < $(VMLINUX)) lines)"
 
 $(BPFOBJ): bpf/fixlat.bpf.c $(VMLINUX)
 	$(BPF_CLANG) -g -Oz -target bpf -D__TARGET_ARCH_x86 -D__BPF__  \
@@ -55,9 +64,13 @@ verify: $(BPFOBJ)
 	@sudo rm -rf /sys/fs/bpf/fixlat_verify
 
 clean:
-	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(USEROBJ)-static $(TESTOBJ) $(HDRTESTOBJ)
+	rm -f $(BPFOBJ) $(SKEL) $(USEROBJ) $(USEROBJ)-static $(TESTOBJ) $(HDRTESTOBJ)
 	rm -f ebpf-fix-latency-tool-$(VERSION).zip ebpf-fix-latency-tool-$(VERSION)/ebpf-fix-latency-tool
 	rmdir ebpf-fix-latency-tool-$(VERSION) 2>/dev/null || true
+
+# Clean everything including committed vmlinux.h (for local development)
+distclean: clean
+	rm -f $(VMLINUX)
 
 # Create distribution ZIP with version suffix
 dist: static
@@ -69,4 +82,4 @@ dist: static
 	@rm -rf ebpf-fix-latency-tool-$(VERSION)
 	@echo "Created: ebpf-fix-latency-tool-$(VERSION).zip"
 
-.PHONY: all test verify clean static dist
+.PHONY: all test verify clean distclean static dist vmlinux-regenerate

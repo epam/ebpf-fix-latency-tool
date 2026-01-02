@@ -1,5 +1,5 @@
 # Build artifacts
-bpf/vmlinux.h
+# Note: vmlinux.h is committed for CI compatibility (GitHub Actions lacks BTF)
 bpf/fixlat.bpf.o
 bpf/fixlat.skel.h
 user/fixlat
