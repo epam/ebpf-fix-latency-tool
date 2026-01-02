@@ -89,7 +89,7 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
     __u8 *data_end   = (__u8 *)(long)skb->data_end;
 
     __u32 base = skb->cb[CB_SCAN_START];
-    if (base > MTU) // otherwise verifier assumes base is [0, 0xffffffff]
+    if (base > MTU_REASONABLE_MAX) // otherwise verifier assumes base is [0, 0xffffffff]
         return TC_ACT_OK;
 
     bool found_tag11_start = false;
