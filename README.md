@@ -265,6 +265,7 @@ The program automatically cleans up on exit (Ctrl+C or ESC key).
 - **Concurrent pending requests**: Maximum 65,536 unique Tag 11 values awaiting responses at any given moment (configurable via `-m`). Stale entries are automatically evicted after 500ms timeout (configurable via `-t`). When at limit, oldest entries are evicted to make room.
 - **IPv4 only**: No IPv6 support
 - **TCP only**: UDP-based protocols not supported
+- **64-bit architecture only**: The tool is designed for 64-bit systems (x86_64, aarch64) due to the way per-CPU metrics are collected using non-atomic 64-bit increments.
 
 ---
 
