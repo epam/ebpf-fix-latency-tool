@@ -256,6 +256,7 @@ The program automatically cleans up on exit (Ctrl+C or ESC key).
 
 ### Limitations
 - **Tag 11 correlation only**: The tool uses FIX Tag 11 (ClOrdID) exclusively for correlating inbound requests with outbound responses. Other FIX tags (e.g., Tag 37 OrderID, Tag 41 OrigClOrdID) are not supported for correlation.
+- **Duplicate Tag 11 handling**: Userspace collection logic does not support duplicate inbound Tag 11 values. For outbound messages, only the first occurrence of a duplicate Tag 11 is processed. This works well for OMS systems that require unique order IDs (Tag 11) and may respond with multiple execution reports for each order (only the first response counts for order ack latency).
 - **Fragmented FIX messages**: Partially supported. If a Tag 11 field is split across TCP packets (e.g., `\x01 11=` in one packet, `ORDER123\x01` in the next), the parser will miss it. Tag 11 must be complete within a single TCP packet.
 - **Non-linear SKBs (GRO/LRO)**: The tool automatically detects and linearizes fragmented packets on both ingress and egress. Fragmentation is rare on ingress (occurs with GRO/Large Receive Offload enabled) but common on egress (GSO/Generic Segmentation Offload). Fragmentation events are tracked in the `fragmented` counter. If high fragmentation is observed on ingress, this may indicate GRO is enabled on the interface.
 - **Request-response model**: Expects at least one response message for each inbound request. Multiple responses per request are not explicitly handled.
