@@ -30,6 +30,10 @@ struct fixlat_stats {
     __u64 payload_zero;         // packets with no TCP payload
     __u64 payload_too_small;    // TCP payload < 32 bytes
 
+    // Fragmentation counters
+    __u64 ingress_fragmented;   // ingress packets that were non-linear (fragmented)
+    __u64 egress_fragmented;    // egress packets that were non-linear (fragmented)
+
     // Error counters
     __u64 cb_clobbered;         // skb->cb magic marker was corrupted
     __u64 tag11_too_long;       // tag 11 value exceeded max length

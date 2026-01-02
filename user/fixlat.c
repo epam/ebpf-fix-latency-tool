@@ -427,6 +427,8 @@ static void snapshot(int fd_stats, double elapsed_sec) {
             st.egress_scan_started += percpu_stats[i].egress_scan_started;
             st.payload_zero += percpu_stats[i].payload_zero;
             st.payload_too_small += percpu_stats[i].payload_too_small;
+            st.ingress_fragmented += percpu_stats[i].ingress_fragmented;
+            st.egress_fragmented += percpu_stats[i].egress_fragmented;
             st.cb_clobbered += percpu_stats[i].cb_clobbered;
             st.tag11_too_long += percpu_stats[i].tag11_too_long;
             st.parser_stuck += percpu_stats[i].parser_stuck;
@@ -464,6 +466,13 @@ static void snapshot(int fd_stats, double elapsed_sec) {
         printf(" | filters: payload_zero=%llu payload_small=%llu",
             (unsigned long long)st.payload_zero,
             (unsigned long long)st.payload_too_small);
+    }
+
+    // Append fragmentation stats if any non-zero
+    if (st.ingress_fragmented || st.egress_fragmented) {
+        printf(" | fragmented: ingress=%llu egress=%llu",
+            (unsigned long long)st.ingress_fragmented,
+            (unsigned long long)st.egress_fragmented);
     }
     printf("\n");
 

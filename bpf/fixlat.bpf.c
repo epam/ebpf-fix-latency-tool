@@ -251,11 +251,20 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
             return TC_ACT_OK;
     }
 
-    // On egress, payload may be in SKB fragments (not linear buffer)
-    // Linearize now that we know this packet needs scanning
-    if (!is_ingress && skb->len > 0) {
-        bpf_skb_pull_data(skb, skb->len);
-        // Note: data pointers are reloaded in tail call functions
+    // Check if packet is fragmented (payload in non-linear buffer)
+    __u32 linear_len = (__u32)((__u64)data_end - (__u64)data_start);
+    bool is_fragmented = (skb->len > linear_len);
+
+    if (is_fragmented) {
+        if (st) {
+            if (is_ingress)
+                stat_inc(&st->ingress_fragmented);
+            else
+                stat_inc(&st->egress_fragmented);
+        }
+
+        // Linearize fragmented packets so we can scan the full payload
+        bpf_skb_pull_data(skb, skb->len); // NB: skb data pointers must be reloaded after this call!
     }
 
     // Track packets that pass all filters and start scanning
@@ -266,9 +275,10 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
             stat_inc(&st->egress_scan_started);
     }
 
-    // Initialize scan state
+    // Initialize scan state - start from payload, not packet start!
+    // This avoids rescanning Ethernet/IP/TCP headers in tail calls
     skb->cb[CB_MAGIC]      = CB_MAGIC_MARKER;
-    skb->cb[CB_SCAN_START] = 0;
+    skb->cb[CB_SCAN_START] = headers_len;
 
     bpf_tail_call(skb, jump_table, 1);
     return TC_ACT_OK;
