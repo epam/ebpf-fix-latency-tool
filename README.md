@@ -1,6 +1,6 @@
 # ebpf-fix-latency-tool - eBPF FIX Protocol Latency Monitor
 
-[![CI](https://github.com/YOUR_USERNAME/ebpf-latency-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/ebpf-latency-tool/actions/workflows/ci.yml)
+[![CI](https://github.com/epam/ebpf-fix-latency-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/epam/ebpf-fix-latency-tool/actions/workflows/ci.yml)
 
 **Latency measurement tool for FIX protocol traffic using eBPF TC hooks**
 
@@ -45,6 +45,11 @@ sudo dnf install -y clang llvm libbpf-devel kernel-devel bpftool
 ### Compile
 ```bash
 make
+```
+
+**Note:** `bpf/vmlinux.h` is committed to the repository for CI compatibility (GitHub Actions lacks BTF support). To regenerate it from your local kernel:
+```bash
+make vmlinux-regenerate
 ```
 
 ### Build Static Binary (for distribution)
