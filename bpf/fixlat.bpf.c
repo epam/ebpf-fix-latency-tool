@@ -151,7 +151,8 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
                 }
             }
         } else {
-            // likely tag 11 length exceed FIXLAT_MAX_TAGVAL_LEN - report as error
+            // Tag 11 value >= FIXLAT_MAX_TAGVAL_LEN bytes without terminating SOH
+            if (st) stat_inc(&st->tag11_too_long);
         }
     }
 
