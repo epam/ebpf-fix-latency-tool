@@ -12,6 +12,7 @@ BPFOBJ    := bpf/fixlat.bpf.o
 SKEL      := bpf/fixlat.skel.h
 USEROBJ   := user/ebpf-fix-latency-tool
 TESTOBJ   := test/test_parser_logic
+HDRTESTOBJ := test/test_hdr_histogram
 
 all: $(USEROBJ)
 
@@ -37,9 +38,15 @@ static: user/fixlat.c $(SKEL)
 $(TESTOBJ): test/test_parser_logic.c include/fixlat.h
 	$(CC) $(CFLAGS) -Iinclude test/test_parser_logic.c -o $@
 
-test: $(TESTOBJ)
+$(HDRTESTOBJ): test/test_hdr_histogram.c
+	$(CC) $(CFLAGS) test/test_hdr_histogram.c -o $@
+
+test: $(TESTOBJ) $(HDRTESTOBJ)
 	@echo "Running parser unit tests..."
 	@./$(TESTOBJ)
+	@echo ""
+	@echo "Running HDR histogram unit tests..."
+	@./$(HDRTESTOBJ)
 
 verify: $(BPFOBJ)
 	@echo "Verifying eBPF programs..."
@@ -48,7 +55,7 @@ verify: $(BPFOBJ)
 	@sudo rm -rf /sys/fs/bpf/fixlat_verify
 
 clean:
-	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(USEROBJ)-static $(TESTOBJ)
+	rm -f $(VMLINUX) $(BPFOBJ) $(SKEL) $(USEROBJ) $(USEROBJ)-static $(TESTOBJ) $(HDRTESTOBJ)
 	rm -f ebpf-fix-latency-tool-$(VERSION).zip ebpf-fix-latency-tool-$(VERSION)/ebpf-fix-latency-tool
 	rmdir ebpf-fix-latency-tool-$(VERSION) 2>/dev/null || true
 

@@ -1,0 +1,385 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <assert.h>
+#include <math.h>
+
+// HDR histogram globals (same as in fixlat.c)
+static uint64_t max_latency_ns = 100000000;  // 100ms default
+static uint64_t num_buckets = 0;
+
+// HDR histogram functions (copy from fixlat.c - UPDATED WITH 900 BUCKETS PER DECADE)
+static uint64_t hdr_calculate_num_buckets(uint64_t max_value) {
+    if (max_value == 0) return 1;
+
+    uint64_t buckets = 0;
+    uint64_t range_start = 0;
+    uint64_t magnitude = 1;
+
+    while (range_start <= max_value) {
+        uint64_t range_end = (magnitude * 1000) - 1;
+        if (range_end >= max_value) {
+            // Partial range at the end
+            uint64_t values_in_range = max_value - range_start + 1;
+            buckets += (values_in_range + magnitude - 1) / magnitude;
+            break;
+        }
+        // First range (0-999) has 1000 buckets, others have 900
+        buckets += (magnitude == 1) ? 1000 : 900;
+        range_start = magnitude * 1000;
+        magnitude *= 10;
+    }
+
+    return buckets;
+}
+
+static uint64_t hdr_value_to_index(uint64_t value) {
+    if (value == 0) return 0;
+    if (value >= max_latency_ns) {
+        return num_buckets > 0 ? num_buckets - 1 : 0;
+    }
+
+    uint64_t magnitude = 1;
+    uint64_t base_index = 0;
+    uint64_t range_start = 0;
+
+    while (value >= magnitude * 1000) {
+        base_index += (magnitude == 1) ? 1000 : 900;
+        range_start = magnitude * 1000;
+        magnitude *= 10;
+    }
+
+    return base_index + (value - range_start) / magnitude;
+}
+
+static uint64_t hdr_index_to_value(uint64_t index) {
+    if (index == 0) return 0;
+    if (index >= num_buckets) return max_latency_ns;
+
+    uint64_t magnitude = 1;
+    uint64_t base_index = 0;
+    uint64_t range_start = 0;
+
+    while (index >= base_index + ((magnitude == 1) ? 1000 : 900) &&
+           base_index + ((magnitude == 1) ? 1000 : 900) < num_buckets) {
+        base_index += (magnitude == 1) ? 1000 : 900;
+        range_start = magnitude * 1000;
+        magnitude *= 10;
+    }
+
+    uint64_t offset = index - base_index;
+    uint64_t bucket_min = range_start + (offset * magnitude);
+    uint64_t bucket_max = bucket_min + magnitude - 1;
+
+    // Clamp bucket_max to max_latency_ns (for partial buckets at the end)
+    if (bucket_max > max_latency_ns) {
+        bucket_max = max_latency_ns;
+    }
+
+    return (bucket_min + bucket_max) / 2;
+}
+
+// Test framework
+static int tests_run = 0;
+static int tests_passed = 0;
+static int tests_failed = 0;
+static int current_test_failed = 0;
+
+#define TEST(name) \
+    static void test_##name(void); \
+    static void run_test_##name(void) { \
+        printf("Running test: %s... ", #name); \
+        fflush(stdout); \
+        tests_run++; \
+        current_test_failed = 0; \
+        test_##name(); \
+        if (!current_test_failed) { \
+            printf("PASSED\n"); \
+            tests_passed++; \
+        } \
+    } \
+    static void test_##name(void)
+
+#define ASSERT(condition, message) \
+    do { \
+        if (!(condition)) { \
+            printf("\n  FAILED: %s\n  at %s:%d\n", message, __FILE__, __LINE__); \
+            current_test_failed = 1; \
+            tests_failed++; \
+            return; \
+        } \
+    } while(0)
+
+#define ASSERT_EQ(actual, expected, message) \
+    do { \
+        uint64_t _a = (actual); \
+        uint64_t _e = (expected); \
+        if (_a != _e) { \
+            printf("\n  FAILED: %s\n  Expected: %llu, Got: %llu\n  at %s:%d\n", \
+                   message, (unsigned long long)_e, (unsigned long long)_a, __FILE__, __LINE__); \
+            current_test_failed = 1; \
+            tests_failed++; \
+            return; \
+        } \
+    } while(0)
+
+// ===== TESTS =====
+
+TEST(bucket_calculation_100ms) {
+    max_latency_ns = 100000000; // 100ms exactly
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // 0-999: 1000 buckets
+    // 1000-9999: 900 buckets
+    // 10000-99999: 900 buckets
+    // 100000-999999: 900 buckets
+    // 1000000-9999999: 900 buckets
+    // 10000000-99999999: 900 buckets
+    // 100000000-100000000: 1 bucket (partial)
+    // Total: 1000 + 5*900 + 1 = 5501 buckets
+    ASSERT_EQ(num_buckets, 5501, "100ms should use 5501 buckets");
+}
+
+TEST(bucket_calculation_1s) {
+    max_latency_ns = 1000000000; // 1s exactly
+    uint64_t buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // 1000 + 6*900 + 1 = 6401 buckets
+    ASSERT_EQ(buckets, 6401, "1s should use 6401 buckets");
+}
+
+TEST(bucket_calculation_10ms) {
+    max_latency_ns = 10000000; // 10ms exactly
+    uint64_t buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // 0-999: 1000, 1k-9.9k: 900, 10k-99.9k: 900, 100k-999.9k: 900, 1m-9.9m: 900, 10m: 1
+    // Total: 1000 + 4*900 + 1 = 4601
+    ASSERT_EQ(buckets, 4601, "10ms should use 4601 buckets");
+}
+
+TEST(value_to_index_zero) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    uint64_t index = hdr_value_to_index(0);
+    ASSERT_EQ(index, 0, "Value 0 should map to index 0");
+}
+
+TEST(value_to_index_first_range) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // Range 0-999 (width=1): value N maps to index N
+    ASSERT_EQ(hdr_value_to_index(1), 1, "Value 1ns -> index 1");
+    ASSERT_EQ(hdr_value_to_index(100), 100, "Value 100ns -> index 100");
+    ASSERT_EQ(hdr_value_to_index(500), 500, "Value 500ns -> index 500");
+    ASSERT_EQ(hdr_value_to_index(999), 999, "Value 999ns -> index 999");
+}
+
+TEST(value_to_index_second_range) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // Range 1000-9999 (width=10): base_index=1000
+    // value 1000 -> index 1000
+    // value 1010 -> index 1001
+    // value 5000 -> index 1400
+    ASSERT_EQ(hdr_value_to_index(1000), 1000, "Value 1000ns -> index 1000");
+    ASSERT_EQ(hdr_value_to_index(1010), 1001, "Value 1010ns -> index 1001");
+    ASSERT_EQ(hdr_value_to_index(5000), 1400, "Value 5000ns -> index 1400");
+    ASSERT_EQ(hdr_value_to_index(9990), 1899, "Value 9990ns -> index 1899");
+}
+
+TEST(value_to_index_microsecond_range) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // Range 10000-99999 (width=100): base_index=1900
+    // 10us = 10000ns -> index 1900
+    // 30us = 30000ns -> (30000 - 10000) / 100 = 200 -> index 2100
+    // 50us = 50000ns -> (50000 - 10000) / 100 = 400 -> index 2300
+    ASSERT_EQ(hdr_value_to_index(10000), 1900, "Value 10us -> index 1900");
+    ASSERT_EQ(hdr_value_to_index(30000), 2100, "Value 30us -> index 2100");
+    ASSERT_EQ(hdr_value_to_index(50000), 2300, "Value 50us -> index 2300");
+}
+
+TEST(value_to_index_max_value) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    uint64_t index = hdr_value_to_index(max_latency_ns);
+    ASSERT_EQ(index, num_buckets - 1, "Max value should map to last bucket");
+
+    // Values beyond max should also map to last bucket
+    index = hdr_value_to_index(max_latency_ns * 2);
+    ASSERT_EQ(index, num_buckets - 1, "Values > max should map to last bucket");
+}
+
+TEST(index_to_value_zero) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    uint64_t value = hdr_index_to_value(0);
+    ASSERT_EQ(value, 0, "Index 0 should map to value 0");
+}
+
+TEST(index_to_value_first_range) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // Range 0-999 (width=1): index N represents bucket [N,N], midpoint = N
+    ASSERT_EQ(hdr_index_to_value(1), 1, "Index 1 -> 1ns");
+    ASSERT_EQ(hdr_index_to_value(100), 100, "Index 100 -> 100ns");
+    ASSERT_EQ(hdr_index_to_value(500), 500, "Index 500 -> 500ns");
+}
+
+TEST(index_to_value_second_range) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // Range 1000-9999 (width=10): index 1000 = bucket [1000-1009], midpoint=1004
+    ASSERT_EQ(hdr_index_to_value(1000), 1004, "Index 1000 -> 1004ns");
+    ASSERT_EQ(hdr_index_to_value(1001), 1014, "Index 1001 -> 1014ns");
+}
+
+TEST(roundtrip_value_index_value) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    uint64_t test_values[] = {
+        0, 1, 100, 500, 999,           // First range
+        1000, 5000, 9999,              // Second range
+        10000, 30000, 50000, 99999,    // Third range
+        100000, 500000, 999999,        // Fourth range
+        1000000, 5000000, 9999999,     // Fifth range
+        10000000, 50000000, 99999999   // Sixth range
+    };
+
+    for (size_t i = 0; i < sizeof(test_values)/sizeof(test_values[0]); i++) {
+        uint64_t original = test_values[i];
+        uint64_t index = hdr_value_to_index(original);
+        uint64_t reconstructed = hdr_index_to_value(index);
+
+        // Find the magnitude (bucket width) for this value
+        uint64_t magnitude = 1;
+        while (original >= magnitude * 1000) {
+            magnitude *= 10;
+        }
+
+        // Reconstructed value should be within ±magnitude/2 of original
+        uint64_t tolerance = magnitude;
+        uint64_t diff = (reconstructed > original) ?
+                       (reconstructed - original) : (original - reconstructed);
+
+        if (diff > tolerance) {
+            printf("\n  Roundtrip failed for value %llu: index=%llu, reconstructed=%llu (diff=%llu, tolerance=%llu)\n",
+                   (unsigned long long)original, (unsigned long long)index,
+                   (unsigned long long)reconstructed, (unsigned long long)diff,
+                   (unsigned long long)tolerance);
+            ASSERT(0, "Roundtrip value mismatch");
+        }
+    }
+}
+
+TEST(precision_check_microsecond_range) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // In 10-100us range (10000-99999), bucket width = 100ns
+    // Check that values differing by 100ns map to different buckets
+    uint64_t val1 = 30000;  // 30.0us
+    uint64_t val2 = 30100;  // 30.1us
+
+    uint64_t idx1 = hdr_value_to_index(val1);
+    uint64_t idx2 = hdr_value_to_index(val2);
+
+    ASSERT(idx1 != idx2, "Values 30.0us and 30.1us should map to different buckets");
+    ASSERT_EQ(idx2 - idx1, 1, "Adjacent 100ns values should map to adjacent buckets");
+}
+
+TEST(no_bucket_overlap) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // Test range boundaries: verify no overlap between ranges
+    // 999 (last of range 0) and 1000 (first of range 1)
+    uint64_t idx_999 = hdr_value_to_index(999);
+    uint64_t idx_1000 = hdr_value_to_index(1000);
+    ASSERT(idx_1000 > idx_999, "Range boundary: 1000 should be after 999");
+
+    // 9999 (last of range 1) and 10000 (first of range 2)
+    uint64_t idx_9999 = hdr_value_to_index(9999);
+    uint64_t idx_10000 = hdr_value_to_index(10000);
+    ASSERT(idx_10000 > idx_9999, "Range boundary: 10000 should be after 9999");
+}
+
+TEST(all_buckets_valid) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // Every bucket index should produce a valid value
+    for (uint64_t i = 0; i < num_buckets; i++) {
+        uint64_t value = hdr_index_to_value(i);
+        if (value > max_latency_ns) {
+            printf("\n  Bucket %llu -> value %llu (max=%llu)\n",
+                   (unsigned long long)i, (unsigned long long)value,
+                   (unsigned long long)max_latency_ns);
+        }
+        ASSERT(value <= max_latency_ns, "Bucket value should not exceed max");
+    }
+}
+
+TEST(monotonic_increasing) {
+    max_latency_ns = 100000000;
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+
+    // Bucket values should be monotonically increasing
+    uint64_t prev_value = 0;
+    for (uint64_t i = 0; i < num_buckets; i++) {
+        uint64_t value = hdr_index_to_value(i);
+        if (value < prev_value) {
+            printf("\n  Bucket %llu -> value %llu < prev %llu\n",
+                   (unsigned long long)i, (unsigned long long)value,
+                   (unsigned long long)prev_value);
+        }
+        ASSERT(value >= prev_value, "Bucket values should be monotonically increasing");
+        prev_value = value;
+    }
+}
+
+// ===== MAIN =====
+
+int main(void) {
+    printf("\n=== HDR Histogram Unit Tests ===\n\n");
+
+    run_test_bucket_calculation_100ms();
+    run_test_bucket_calculation_1s();
+    run_test_bucket_calculation_10ms();
+    run_test_value_to_index_zero();
+    run_test_value_to_index_first_range();
+    run_test_value_to_index_second_range();
+    run_test_value_to_index_microsecond_range();
+    run_test_value_to_index_max_value();
+    run_test_index_to_value_zero();
+    run_test_index_to_value_first_range();
+    run_test_index_to_value_second_range();
+    run_test_roundtrip_value_index_value();
+    run_test_precision_check_microsecond_range();
+    run_test_no_bucket_overlap();
+    run_test_all_buckets_valid();
+    run_test_monotonic_increasing();
+
+    printf("\n=== Test Results ===\n");
+    printf("Total:  %d\n", tests_run);
+    printf("Passed: %d\n", tests_passed);
+    printf("Failed: %d\n", tests_failed);
+
+    if (tests_failed > 0) {
+        printf("\nSome tests FAILED!\n");
+        return 1;
+    }
+
+    printf("\nAll tests PASSED!\n");
+    return 0;
+}

@@ -70,6 +70,7 @@ sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
 - `-m <max>` : Maximum concurrent pending requests (default: 65536)
 - `-t <seconds>` : Request timeout in seconds (default: 0.5)
 - `-c <cpu>` : Pin userspace thread to specific CPU core for consistent measurements (optional; note: userspace thread always uses busy-spin polling)
+- `-x <milliseconds>` : Maximum latency to track in histogram (default: 100ms)
 - `-v` : Show version and exit
 
 **Port filtering examples:**
@@ -85,6 +86,12 @@ sudo ./user/ebpf-fix-latency-tool -i eth0 -p 12001-12010
 ```bash
 # Pin userspace thread to CPU core 3 with busy-spin polling for lowest latency
 sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080 -c 3
+```
+
+**Custom histogram range example:**
+```bash
+# Track latencies up to 500ms (useful for high-latency environments)
+sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080 -x 500
 ```
 
 ### Sample Output
@@ -251,7 +258,8 @@ The program automatically cleans up on exit (Ctrl+C or ESC key).
 ### Performance
 - **Overhead**: ~1-2% CPU at 100k msg/sec
 - **Latency impact**: <1μs (kernel-level capture)
-- **Memory**: ~3MB (ring buffers + histograms + hash table)
+- **Memory**: ~2.1MB (ring buffers: 2MB + HDR histogram: ~88KB for 100ms max + hash table)
+- **Histogram**: HDR histogram with 3 significant figures (compact, configurable range via `-x`)
 - **Scalability**: Per-CPU metric maps for lock-free operation
 
 ### Limitations

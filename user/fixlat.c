@@ -98,15 +98,93 @@ static void handle_keyboard(void) {
     }
 }
 
-// HDR histogram: linear buckets for fine-grained measurement
-// Bucket width: 100ns, covering 0-10ms with 100,000 buckets
-#define BUCKET_WIDTH_NS 100
-#define MAX_LATENCY_NS 10000000  // 10ms
-#define NUM_BUCKETS (MAX_LATENCY_NS / BUCKET_WIDTH_NS)
+// HDR histogram: 3 significant figures precision
+// Maintains relative precision across wide range with compact memory footprint
+// For 3 sig figs: 0-999 (width=1, 1000 buckets), 1000-9999 (width=10, 900 buckets), etc.
+static uint64_t max_latency_ns = 100000000;  // 100ms default, configurable via -x
+static uint64_t num_buckets = 0;  // Calculated at runtime based on max_latency_ns
+
+// Calculate number of buckets needed for given max value with 3 sig figs
+// First decade (0-999) uses 1000 buckets, subsequent decades use 900 buckets each
+static uint64_t hdr_calculate_num_buckets(uint64_t max_value) {
+    if (max_value == 0) return 1;
+
+    uint64_t buckets = 0;
+    uint64_t range_start = 0;
+    uint64_t magnitude = 1;
+
+    while (range_start <= max_value) {
+        uint64_t range_end = (magnitude * 1000) - 1;
+        if (range_end >= max_value) {
+            // Partial or exact range at the end
+            uint64_t values_in_range = max_value - range_start + 1;
+            buckets += (values_in_range + magnitude - 1) / magnitude; // Ceiling division
+            break;
+        }
+        // First range (0-999) has 1000 buckets, others have 900
+        buckets += (magnitude == 1) ? 1000 : 900;
+        range_start = magnitude * 1000;
+        magnitude *= 10;
+    }
+
+    return buckets;
+}
+
+// Map value to bucket index (3 sig figs)
+// Ranges: 0-999 (width=1), 1000-9999 (width=10), 10000-99999 (width=100), etc.
+static uint64_t hdr_value_to_index(uint64_t value) {
+    if (value == 0) return 0;
+    if (value >= max_latency_ns) {
+        return num_buckets > 0 ? num_buckets - 1 : 0;
+    }
+
+    uint64_t magnitude = 1;
+    uint64_t base_index = 0;
+    uint64_t range_start = 0;
+
+    // Find which magnitude range this value falls into
+    while (value >= magnitude * 1000) {
+        base_index += (magnitude == 1) ? 1000 : 900;
+        range_start = magnitude * 1000;
+        magnitude *= 10;
+    }
+
+    // Within this range, bucket width = magnitude
+    return base_index + (value - range_start) / magnitude;
+}
+
+// Map bucket index to representative value (midpoint of bucket)
+static uint64_t hdr_index_to_value(uint64_t index) {
+    if (index == 0) return 0;
+    if (index >= num_buckets) return max_latency_ns;
+
+    uint64_t magnitude = 1;
+    uint64_t base_index = 0;
+    uint64_t range_start = 0;
+
+    // Find which magnitude range this index falls into
+    while (index >= base_index + ((magnitude == 1) ? 1000 : 900) &&
+           base_index + ((magnitude == 1) ? 1000 : 900) < num_buckets) {
+        base_index += (magnitude == 1) ? 1000 : 900;
+        range_start = magnitude * 1000;
+        magnitude *= 10;
+    }
+
+    uint64_t offset = index - base_index;
+    uint64_t bucket_min = range_start + (offset * magnitude);
+    uint64_t bucket_max = bucket_min + magnitude - 1;
+
+    // Clamp bucket_max to max_latency_ns (for partial buckets at the end)
+    if (bucket_max > max_latency_ns) {
+        bucket_max = max_latency_ns;
+    }
+
+    return (bucket_min + bucket_max) / 2; // Midpoint
+}
 
 // Dual histograms: interval (reset each report) and cumulative (long-term)
-static uint64_t interval_histogram[NUM_BUCKETS];
-static uint64_t cumulative_histogram[NUM_BUCKETS];
+static uint64_t *interval_histogram = NULL;
+static uint64_t *cumulative_histogram = NULL;
 static uint64_t interval_sum_ns = 0;  // For AVG calculation
 static uint64_t cumulative_sum_ns = 0;
 
@@ -286,12 +364,8 @@ static bool evict_oldest_entry(void) {
 static void record_latency(uint64_t latency_ns) {
     if (latency_ns == 0) return;
 
-    // Calculate bucket index (100ns resolution)
-    uint64_t bucket = latency_ns / BUCKET_WIDTH_NS;
-
-    // Cap at max bucket
-    if (bucket >= NUM_BUCKETS)
-        bucket = NUM_BUCKETS - 1;
+    // Calculate HDR bucket index (3 significant figures)
+    uint64_t bucket = hdr_value_to_index(latency_ns);
 
     // Update both histograms
     interval_histogram[bucket]++;
@@ -306,7 +380,7 @@ static void record_latency(uint64_t latency_ns) {
 
 static uint64_t percentile_from_buckets(const uint64_t *hist, double p) {
     uint64_t total = 0;
-    for (uint64_t i = 0; i < NUM_BUCKETS; i++)
+    for (uint64_t i = 0; i < num_buckets; i++)
         total += hist[i];
 
     if (total == 0) return 0;
@@ -314,18 +388,18 @@ static uint64_t percentile_from_buckets(const uint64_t *hist, double p) {
     // Special cases for MIN (p=0.0) and MAX (p=100.0)
     if (p <= 0.0) {
         // Find first non-empty bucket
-        for (uint64_t i = 0; i < NUM_BUCKETS; i++) {
+        for (uint64_t i = 0; i < num_buckets; i++) {
             if (hist[i] > 0)
-                return (i * BUCKET_WIDTH_NS) + (BUCKET_WIDTH_NS / 2);
+                return hdr_index_to_value(i);
         }
         return 0;
     }
 
     if (p >= 100.0) {
         // Find last non-empty bucket
-        for (uint64_t i = NUM_BUCKETS; i > 0; i--) {
+        for (uint64_t i = num_buckets; i > 0; i--) {
             if (hist[i - 1] > 0)
-                return ((i - 1) * BUCKET_WIDTH_NS) + (BUCKET_WIDTH_NS / 2);
+                return hdr_index_to_value(i - 1);
         }
         return 0;
     }
@@ -334,15 +408,15 @@ static uint64_t percentile_from_buckets(const uint64_t *hist, double p) {
     uint64_t rank = (uint64_t)((p / 100.0) * (double)(total - 1)) + 1;
     uint64_t acc = 0;
 
-    for (uint64_t i = 0; i < NUM_BUCKETS; i++) {
+    for (uint64_t i = 0; i < num_buckets; i++) {
         acc += hist[i];
         if (acc >= rank) {
-            // Return the midpoint of the bucket in nanoseconds
-            return (i * BUCKET_WIDTH_NS) + (BUCKET_WIDTH_NS / 2);
+            // Return the representative value for this bucket
+            return hdr_index_to_value(i);
         }
     }
 
-    return MAX_LATENCY_NS;
+    return max_latency_ns;
 }
 
 // Format and print a latency value
@@ -356,7 +430,7 @@ static void print_latency(uint64_t ns) {
 // Dump detailed cumulative histogram
 static void dump_cumulative_histogram(void) {
     uint64_t total = 0;
-    for (uint64_t i = 0; i < NUM_BUCKETS; i++)
+    for (uint64_t i = 0; i < num_buckets; i++)
         total += cumulative_histogram[i];
 
     if (total == 0) {
@@ -382,7 +456,7 @@ static void dump_cumulative_histogram(void) {
 
 // Reset cumulative histogram
 static void reset_cumulative_histogram(void) {
-    memset(cumulative_histogram, 0, sizeof(cumulative_histogram));
+    memset(cumulative_histogram, 0, num_buckets * sizeof(uint64_t));
     cumulative_sum_ns = 0;
     printf("\n[reset] Cumulative histogram cleared\n\n");
     fflush(stdout);
@@ -497,7 +571,7 @@ static void snapshot(int fd_stats, double elapsed_sec) {
     fflush(stdout);
 
     // Reset interval histogram for next period
-    memset(interval_histogram, 0, sizeof(interval_histogram));
+    memset(interval_histogram, 0, num_buckets * sizeof(uint64_t));
     interval_sum_ns = 0;
     matched_count = 0;
     mismatch_count = 0;
@@ -535,13 +609,14 @@ static int parse_port_range(const char *str, uint16_t *min, uint16_t *max) {
 static void usage(const char *p){
     fprintf(stderr,
         "ebpf-fix-latency-tool v%s - eBPF FIX Protocol Latency Monitor\n\n"
-        "Usage: %s -i <iface> -p <port|range> [-r seconds] [-m max] [-t timeout] [-c cpu]\n"
+        "Usage: %s -i <iface> -p <port|range> [-r seconds] [-m max] [-t timeout] [-c cpu] [-x max_ms]\n"
         "  -i  Network interface to monitor (required)\n"
         "  -p  TCP port or range to watch (e.g., 8080 or 12001-12010) (required)\n"
         "  -r  Report interval in seconds (default: 5)\n"
         "  -m  Maximum concurrent pending requests (default: 65536)\n"
         "  -t  Request timeout in seconds (default: 0.5)\n"
         "  -c  Pin userspace thread to CPU core (optional)\n"
+        "  -x  Maximum latency to track in milliseconds (default: 100)\n"
         "  -v  Show version and exit\n", VERSION, p);
 }
 
@@ -552,7 +627,7 @@ int main(int argc, char **argv)
     int cpu_core = -1;
     int opt;
 
-    while ((opt=getopt(argc, argv, "i:p:r:m:t:c:v")) != -1) {
+    while ((opt=getopt(argc, argv, "i:p:r:m:t:c:x:v")) != -1) {
         switch (opt) {
             case 'i': iface=optarg; break;
             case 'p':
@@ -565,6 +640,7 @@ int main(int argc, char **argv)
             case 'm': max_pending=(uint64_t)atoll(optarg); break;
             case 't': timeout_ns=(uint64_t)(atof(optarg) * 1e9); break;
             case 'c': cpu_core=atoi(optarg); break;
+            case 'x': max_latency_ns=(uint64_t)(atof(optarg) * 1e6); break; // Convert ms to ns
             case 'v': printf("ebpf-fix-latency-tool v%s\n", VERSION); return 0;
             default: usage(argv[0]); return 1;
         }
@@ -588,6 +664,21 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+
+    // Initialize HDR histogram (3 significant figures)
+    num_buckets = hdr_calculate_num_buckets(max_latency_ns);
+    interval_histogram = calloc(num_buckets, sizeof(uint64_t));
+    cumulative_histogram = calloc(num_buckets, sizeof(uint64_t));
+    if (!interval_histogram || !cumulative_histogram) {
+        fprintf(stderr, "Failed to allocate histogram memory (%llu buckets, ~%llu KB)\n",
+                (unsigned long long)num_buckets,
+                (unsigned long long)(num_buckets * sizeof(uint64_t) * 2 / 1024));
+        return 1;
+    }
+    printf("HDR histogram initialized: %llu buckets (3 sig figs, max %.1fms, ~%llu KB)\n",
+           (unsigned long long)num_buckets,
+           max_latency_ns / 1e6,
+           (unsigned long long)(num_buckets * sizeof(uint64_t) * 2 / 1024));
 
     struct rlimit rl={RLIM_INFINITY, RLIM_INFINITY}; setrlimit(RLIMIT_MEMLOCK, &rl);
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
