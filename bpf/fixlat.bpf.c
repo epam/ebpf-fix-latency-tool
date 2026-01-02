@@ -69,7 +69,7 @@ static __always_inline void stat_inc(__u64 *field) { __sync_fetch_and_add(field,
 #define PER_CALL_SCAN_DEPTH 256
 
 // We do not support Jumbo MTU 
-#define MTU 1500
+#define MTU_REASONABLE_MAX 1522
 
 // Clean packet scanning function - assumes packet is valid
 // Only called from payload tail functions (via tail calls)
