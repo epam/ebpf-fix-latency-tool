@@ -260,7 +260,7 @@ The program automatically cleans up on exit (Ctrl+C or ESC key).
 - **Non-linear SKBs (GRO/LRO)**: The tool automatically detects and linearizes fragmented packets on both ingress and egress. Fragmentation is rare on ingress (occurs with GRO/Large Receive Offload enabled) but common on egress (GSO/Generic Segmentation Offload). Fragmentation events are tracked in the `fragmented` counter. If high fragmentation is observed on ingress, this may indicate GRO is enabled on the interface.
 - **Request-response model**: Expects at least one response message for each inbound request. Multiple responses per request are not explicitly handled.
 - **Max packet size**: 1500 bytes (no jumbo frame support)
-- **Max Tag 11 scanning depth**: 1280 bytes per packet (256 bytes × 5 tail call stages)
+- **Max Tag 11 scanning depth**: 1792 bytes per packet (256 bytes × 7 tail call stages)
 - **Tag 11 value length**: Maximum 24 bytes (FIXLAT_MAX_TAGVAL_LEN)
 - **Concurrent pending requests**: Maximum 65,536 unique Tag 11 values awaiting responses at any given moment (configurable via `-m`). Stale entries are automatically evicted after 500ms timeout (configurable via `-t`). When at limit, oldest entries are evicted to make room.
 - **IPv4 only**: No IPv6 support

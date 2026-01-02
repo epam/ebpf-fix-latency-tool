@@ -313,6 +313,8 @@ SEC("tc") int handle_ingress_payload_2(struct __sk_buff *skb) { return handle_pa
 SEC("tc") int handle_ingress_payload_3(struct __sk_buff *skb) { return handle_payload_chunk(skb, 3, &ingress_tag11_rb, &ingress_jump_table, true); }
 SEC("tc") int handle_ingress_payload_4(struct __sk_buff *skb) { return handle_payload_chunk(skb, 4, &ingress_tag11_rb, &ingress_jump_table, true); }
 SEC("tc") int handle_ingress_payload_5(struct __sk_buff *skb) { return handle_payload_chunk(skb, 5, &ingress_tag11_rb, &ingress_jump_table, true); }
+SEC("tc") int handle_ingress_payload_6(struct __sk_buff *skb) { return handle_payload_chunk(skb, 6, &ingress_tag11_rb, &ingress_jump_table, true); }
+SEC("tc") int handle_ingress_payload_7(struct __sk_buff *skb) { return handle_payload_chunk(skb, 7, &ingress_tag11_rb, &ingress_jump_table, true); }
 
 // Egress payload scanning tail calls
 SEC("tc") int handle_egress_payload_1(struct __sk_buff *skb) { return handle_payload_chunk(skb, 1, &egress_tag11_rb, &egress_jump_table, false); }
@@ -320,5 +322,7 @@ SEC("tc") int handle_egress_payload_2(struct __sk_buff *skb) { return handle_pay
 SEC("tc") int handle_egress_payload_3(struct __sk_buff *skb) { return handle_payload_chunk(skb, 3, &egress_tag11_rb, &egress_jump_table, false); }
 SEC("tc") int handle_egress_payload_4(struct __sk_buff *skb) { return handle_payload_chunk(skb, 4, &egress_tag11_rb, &egress_jump_table, false); }
 SEC("tc") int handle_egress_payload_5(struct __sk_buff *skb) { return handle_payload_chunk(skb, 5, &egress_tag11_rb, &egress_jump_table, false); }
+SEC("tc") int handle_egress_payload_6(struct __sk_buff *skb) { return handle_payload_chunk(skb, 6, &egress_tag11_rb, &egress_jump_table, false); }
+SEC("tc") int handle_egress_payload_7(struct __sk_buff *skb) { return handle_payload_chunk(skb, 7, &egress_tag11_rb, &egress_jump_table, false); }
 
 
