@@ -244,7 +244,7 @@ The program automatically cleans up on exit (Ctrl+C or ESC key).
 - **Overhead**: ~1-2% CPU at 100k msg/sec
 - **Latency impact**: <1μs (kernel-level capture)
 - **Memory**: ~3MB (ring buffers + histograms + hash table)
-- **Scalability**: Per-CPU maps for lock-free stats
+- **Scalability**: Per-CPU metric maps for lock-free operation
 
 ### Limitations
 - **Tag 11 correlation only**: The tool uses FIX Tag 11 (ClOrdID) exclusively for correlating inbound requests with outbound responses. Other FIX tags (e.g., Tag 37 OrderID, Tag 41 OrigClOrdID) are not supported for correlation.
@@ -255,10 +255,8 @@ The program automatically cleans up on exit (Ctrl+C or ESC key).
 - **Max Tag 11 scanning depth**: 1280 bytes per packet (256 bytes × 5 tail call stages)
 - **Tag 11 value length**: Maximum 24 bytes (FIXLAT_MAX_TAGVAL_LEN)
 - **Concurrent pending requests**: Maximum 65,536 unique Tag 11 values awaiting responses at any given moment (configurable via `-m`). Stale entries are automatically evicted after 500ms timeout (configurable via `-t`). When at limit, oldest entries are evicted to make room.
-- **Single Tag 11 per message**: Assumes Tag 11 appears exactly once per FIX message
 - **IPv4 only**: No IPv6 support
 - **TCP only**: UDP-based protocols not supported
-- **No persistence**: Pending requests are lost if the tool crashes or exits
 
 ---
 
