@@ -216,16 +216,17 @@ static __always_inline int validate_and_scan(struct __sk_buff *skb, void *jump_t
     if (doff < sizeof(*tcp) || (void *)tcp + doff > data_end)
         return TC_ACT_OK;
 
-    __u8 *payload = (__u8 *)tcp + doff;
+    // Calculate total header length (Ethernet + IP + TCP)
+    __u32 headers_len = ((__u8 *)tcp - (__u8 *)data_start) + doff;
 
-    // Empty TCP payload (pure ACKs, keepalives, etc.)
-    if ((void *)payload >= data_end) {
+    // Check payload size using skb->len (works even with fragmented payload)
+    if (skb->len <= headers_len) {
         if (st) stat_inc(&st->payload_zero);
         return TC_ACT_OK;
     }
 
-    // Skip very small payloads (unlikely to contain meaningful FIX data)
-    if ((void *)payload + 32 > data_end) {
+    __u32 payload_len = skb->len - headers_len;
+    if (payload_len < 32) {
         if (st) stat_inc(&st->payload_too_small);
         return TC_ACT_OK;
     }
