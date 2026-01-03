@@ -24,7 +24,7 @@
 static volatile bool running = true;
 static int report_every_sec = 5;
 
-#define VERSION "0.0.3"
+#define VERSION "0.0.5"
 
 // Pending inbound tag 11 map entry
 struct pending_tag11 {
