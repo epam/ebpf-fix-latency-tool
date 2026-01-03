@@ -455,6 +455,307 @@ TEST(load_factor_check) {
     pending_map_cleanup();
 }
 
+TEST(combined_stale_and_fifo_eviction) {
+    pending_map_init(5); // Small capacity
+    timeout_ns = 500000000; // 500ms
+
+    uint64_t base_time = 1000000000;
+
+    // Add 5 entries to fill capacity
+    for (int i = 0; i < 5; i++) {
+        char buf[10];
+        snprintf(buf, sizeof(buf), "ENT%d", i);
+        pending_map_add((uint8_t*)buf, strlen(buf), base_time + i * 100000000);
+    }
+    ASSERT_EQ(pending_count, 5, "Should be at capacity");
+
+    // Add new entry at +1000ms
+    // Cutoff = 1000ms - 500ms = 500ms
+    // ENT0 (0ms), ENT1 (100ms), ENT2 (200ms), ENT3 (300ms), ENT4 (400ms) are all stale
+    // Should evict all 5, then add new one
+    pending_map_add((uint8_t*)"NEW", 3, base_time + 1000000000);
+
+    ASSERT_EQ(pending_count, 1, "Should have only new entry");
+    ASSERT_EQ(stale_evicted, 5, "Should have evicted 5 stale entries");
+    ASSERT_EQ(forced_evicted, 0, "No forced evictions needed - stale cleanup made room");
+    ASSERT_EQ(strcmp(pending_age_head->key, "NEW"), 0, "Head should be NEW");
+
+    pending_map_cleanup();
+}
+
+TEST(partial_stale_eviction) {
+    pending_map_init(100);
+    timeout_ns = 0; // Disable timeout during setup
+
+    uint64_t base_time = 1000000000;
+
+    // Add 5 entries all at once (no stale eviction during add since timeout disabled)
+    pending_map_add((uint8_t*)"OLD1", 4, base_time);
+    pending_map_add((uint8_t*)"OLD2", 4, base_time + 100000000);
+    pending_map_add((uint8_t*)"FRESH1", 6, base_time + 500000000);
+    pending_map_add((uint8_t*)"FRESH2", 6, base_time + 600000000);
+    pending_map_add((uint8_t*)"FRESH3", 6, base_time + 700000000);
+
+    ASSERT_EQ(pending_count, 5, "Should have 5 entries");
+
+    // Now enable timeout and add final entry
+    timeout_ns = 300000000; // 300ms timeout
+    // Add at +900ms, cutoff = 900ms - 300ms = 600ms
+    // OLD1 (0ms) and OLD2 (100ms) are stale, FRESH1 (500ms) is stale
+    // FRESH2 (600ms) is exactly at cutoff - NOT stale
+    pending_map_add((uint8_t*)"NEW", 3, base_time + 900000000);
+
+    ASSERT_EQ(pending_count, 3, "Should have 3 entries (evicted 3 stale)");
+    ASSERT_EQ(stale_evicted, 3, "Should have evicted exactly 3 stale entries");
+    ASSERT_EQ(strcmp(pending_age_head->key, "FRESH2"), 0, "Head should be FRESH2");
+    ASSERT_EQ(strcmp(pending_age_tail->key, "NEW"), 0, "Tail should be NEW");
+
+    pending_map_cleanup();
+}
+
+TEST(evict_all_entries_empty_list) {
+    pending_map_init(100);
+    timeout_ns = 500000000; // 500ms
+
+    uint64_t base_time = 1000000000;
+
+    // Add 3 entries
+    pending_map_add((uint8_t*)"A", 1, base_time);
+    pending_map_add((uint8_t*)"B", 1, base_time + 100000000);
+    pending_map_add((uint8_t*)"C", 1, base_time + 200000000);
+    ASSERT_EQ(pending_count, 3, "Should have 3 entries");
+
+    // Add new entry far in future - all existing should be stale
+    pending_map_add((uint8_t*)"NEW", 3, base_time + 2000000000);
+
+    ASSERT_EQ(pending_count, 1, "Should have only new entry");
+    ASSERT_EQ(stale_evicted, 3, "All 3 old entries evicted");
+    ASSERT(pending_age_head != NULL, "Head should not be NULL");
+    ASSERT(pending_age_tail != NULL, "Tail should not be NULL");
+    ASSERT(pending_age_head == pending_age_tail, "Head and tail should be same (single entry)");
+    ASSERT_EQ(strcmp(pending_age_head->key, "NEW"), 0, "Only entry should be NEW");
+
+    // Now remove the last entry
+    uint64_t ts_out;
+    bool found = pending_map_remove((uint8_t*)"NEW", 3, &ts_out);
+    ASSERT(found, "Should find NEW");
+    ASSERT_EQ(pending_count, 0, "List should be empty");
+    ASSERT(pending_age_head == NULL, "Head should be NULL after emptying");
+    ASSERT(pending_age_tail == NULL, "Tail should be NULL after emptying");
+
+    pending_map_cleanup();
+}
+
+TEST(boundary_timestamp_exactly_at_cutoff) {
+    pending_map_init(100);
+    timeout_ns = 500000000; // 500ms
+
+    uint64_t base_time = 1000000000;
+    uint64_t cutoff_time = base_time + 500000000; // Exactly cutoff
+
+    // Add entries around the boundary
+    pending_map_add((uint8_t*)"BEFORE", 6, cutoff_time - 1);  // Just before cutoff - stale
+    pending_map_add((uint8_t*)"EXACT", 5, cutoff_time);        // Exactly at cutoff - NOT stale
+    pending_map_add((uint8_t*)"AFTER", 5, cutoff_time + 1);    // After cutoff - NOT stale
+
+    ASSERT_EQ(pending_count, 3, "Should have 3 entries");
+
+    // Trigger stale eviction at +1000ms
+    // Cutoff = 1000ms - 500ms = 500ms
+    pending_map_add((uint8_t*)"NEW", 3, base_time + 1000000000);
+
+    // Only BEFORE should be evicted (timestamp < cutoff)
+    ASSERT_EQ(pending_count, 3, "Should have 3 entries (EXACT, AFTER, NEW)");
+    ASSERT_EQ(stale_evicted, 1, "Only BEFORE should be evicted");
+    ASSERT_EQ(strcmp(pending_age_head->key, "EXACT"), 0, "EXACT should not be evicted");
+
+    pending_map_cleanup();
+}
+
+TEST(timeout_disabled_no_stale_eviction) {
+    pending_map_init(5);
+    timeout_ns = 0; // Timeout disabled
+
+    uint64_t base_time = 1000000000;
+
+    // Add 5 old entries
+    for (int i = 0; i < 5; i++) {
+        char buf[10];
+        snprintf(buf, sizeof(buf), "OLD%d", i);
+        pending_map_add((uint8_t*)buf, strlen(buf), base_time);
+    }
+    ASSERT_EQ(pending_count, 5, "Should be at capacity");
+    ASSERT_EQ(stale_evicted, 0, "No stale evictions with timeout=0");
+
+    // Add new entry far in future - should NOT evict as stale, should use FIFO
+    pending_map_add((uint8_t*)"NEW", 3, base_time + 10000000000);
+
+    ASSERT_EQ(pending_count, 5, "Still at capacity");
+    ASSERT_EQ(stale_evicted, 0, "Still no stale evictions");
+    ASSERT_EQ(forced_evicted, 1, "Should use FIFO eviction instead");
+    ASSERT_EQ(strcmp(pending_age_head->key, "OLD1"), 0, "OLD0 evicted, OLD1 is now head");
+
+    pending_map_cleanup();
+}
+
+TEST(remove_head_entry_only) {
+    pending_map_init(100);
+
+    pending_map_add((uint8_t*)"FIRST", 5, 1000);
+    pending_map_add((uint8_t*)"SECOND", 6, 2000);
+    pending_map_add((uint8_t*)"THIRD", 5, 3000);
+
+    ASSERT_EQ(pending_count, 3, "Should have 3 entries");
+    ASSERT_EQ(strcmp(pending_age_head->key, "FIRST"), 0, "Head is FIRST");
+
+    // Remove head
+    uint64_t ts_out;
+    bool found = pending_map_remove((uint8_t*)"FIRST", 5, &ts_out);
+    ASSERT(found, "Should find FIRST");
+    ASSERT_EQ(ts_out, 1000, "Timestamp matches");
+    ASSERT_EQ(pending_count, 2, "Should have 2 entries");
+
+    // Verify head updated
+    ASSERT_EQ(strcmp(pending_age_head->key, "SECOND"), 0, "SECOND is new head");
+    ASSERT(pending_age_head->age_prev == NULL, "New head has no prev");
+    ASSERT_EQ(strcmp(pending_age_tail->key, "THIRD"), 0, "Tail unchanged");
+
+    pending_map_cleanup();
+}
+
+TEST(remove_tail_entry_only) {
+    pending_map_init(100);
+
+    pending_map_add((uint8_t*)"FIRST", 5, 1000);
+    pending_map_add((uint8_t*)"SECOND", 6, 2000);
+    pending_map_add((uint8_t*)"THIRD", 5, 3000);
+
+    ASSERT_EQ(pending_count, 3, "Should have 3 entries");
+    ASSERT_EQ(strcmp(pending_age_tail->key, "THIRD"), 0, "Tail is THIRD");
+
+    // Remove tail
+    uint64_t ts_out;
+    bool found = pending_map_remove((uint8_t*)"THIRD", 5, &ts_out);
+    ASSERT(found, "Should find THIRD");
+    ASSERT_EQ(ts_out, 3000, "Timestamp matches");
+    ASSERT_EQ(pending_count, 2, "Should have 2 entries");
+
+    // Verify tail updated
+    ASSERT_EQ(strcmp(pending_age_tail->key, "SECOND"), 0, "SECOND is new tail");
+    ASSERT(pending_age_tail->age_next == NULL, "New tail has no next");
+    ASSERT_EQ(strcmp(pending_age_head->key, "FIRST"), 0, "Head unchanged");
+
+    pending_map_cleanup();
+}
+
+TEST(interleaved_operations_stress) {
+    pending_map_init(100);
+    timeout_ns = 0; // Disable timeout during setup
+
+    uint64_t base_time = 5000000000ULL;
+
+    // Add 10 entries with varying timestamps
+    for (int i = 0; i < 10; i++) {
+        char buf[10];
+        snprintf(buf, sizeof(buf), "A%d", i);
+        pending_map_add((uint8_t*)buf, strlen(buf), base_time + i * 100000000);
+    }
+    ASSERT_EQ(pending_count, 10, "Should have 10 entries");
+
+    // Remove middle 5 (A3, A4, A5, A6, A7)
+    uint64_t ts_out;
+    for (int i = 3; i <= 7; i++) {
+        char buf[10];
+        snprintf(buf, sizeof(buf), "A%d", i);
+        pending_map_remove((uint8_t*)buf, strlen(buf), &ts_out);
+    }
+    ASSERT_EQ(pending_count, 5, "Should have 5 entries");
+
+    // Add 5 more entries (still no timeout)
+    pending_map_add((uint8_t*)"B0", 2, base_time + 1000000000);
+    pending_map_add((uint8_t*)"B1", 2, base_time + 1500000000);
+    pending_map_add((uint8_t*)"B2", 2, base_time + 2000000000);
+    pending_map_add((uint8_t*)"B3", 2, base_time + 2500000000);
+    pending_map_add((uint8_t*)"B4", 2, base_time + 3000000000);
+
+    ASSERT_EQ(pending_count, 10, "Should have 10 entries again");
+
+    // Now enable timeout and trigger stale eviction
+    timeout_ns = 1000000000; // 1 second
+
+    // Trigger stale eviction at +5000ms from base
+    // Cutoff = 5000ms - 1000ms = 4000ms from base
+    pending_map_add((uint8_t*)"TRIGGER", 7, base_time + 5000000000);
+
+    // Should have evicted old entries (A0-A2, A8-A9) but kept newer ones
+    ASSERT(pending_count <= 11, "Some entries should have been evicted");
+    ASSERT(stale_evicted > 0, "Should have evicted some stale entries");
+
+    // Verify age list still valid by walking it
+    int walked = 0;
+    struct pending_tag11 *curr = pending_age_head;
+    uint64_t prev_ts = 0;
+    while (curr) {
+        ASSERT(curr->timestamp_ns >= prev_ts, "Age list should be time-ordered");
+        prev_ts = curr->timestamp_ns;
+        walked++;
+        curr = curr->age_next;
+    }
+    ASSERT_EQ((uint64_t)walked, pending_count, "Age list walk should count all entries");
+
+    pending_map_cleanup();
+}
+
+TEST(age_list_consistency_after_many_removals) {
+    pending_map_init(100);
+    timeout_ns = 0; // No timeout-based eviction
+
+    // Add 20 entries
+    for (int i = 0; i < 20; i++) {
+        char buf[10];
+        snprintf(buf, sizeof(buf), "ITEM%d", i);
+        pending_map_add((uint8_t*)buf, strlen(buf), 1000 + i);
+    }
+    ASSERT_EQ(pending_count, 20, "Should have 20 entries");
+
+    // Remove every other entry (ITEM0, ITEM2, ITEM4, ...)
+    uint64_t ts_out;
+    for (int i = 0; i < 20; i += 2) {
+        char buf[10];
+        snprintf(buf, sizeof(buf), "ITEM%d", i);
+        bool found = pending_map_remove((uint8_t*)buf, strlen(buf), &ts_out);
+        ASSERT(found, "Should find entry to remove");
+    }
+    ASSERT_EQ(pending_count, 10, "Should have 10 entries left");
+
+    // Walk age list and verify consistency
+    int count = 0;
+    struct pending_tag11 *curr = pending_age_head;
+    struct pending_tag11 *prev = NULL;
+
+    while (curr) {
+        // Verify bidirectional linkage
+        ASSERT(curr->age_prev == prev, "Prev pointer should match");
+        if (prev) {
+            ASSERT(prev->age_next == curr, "Next pointer should match");
+        }
+
+        // Verify timestamps are ascending
+        if (prev) {
+            ASSERT(curr->timestamp_ns > prev->timestamp_ns, "Timestamps should be ascending");
+        }
+
+        prev = curr;
+        curr = curr->age_next;
+        count++;
+    }
+
+    ASSERT_EQ(count, 10, "Should walk exactly 10 entries");
+    ASSERT(prev == pending_age_tail, "Last walked entry should be tail");
+
+    pending_map_cleanup();
+}
+
 // ============================================================================
 // Main test runner
 // ============================================================================
@@ -474,6 +775,17 @@ int main(void) {
     run_test_remove_nonexistent_entry();
     run_test_age_list_order_maintained();
     run_test_load_factor_check();
+
+    // Age-based eviction edge cases
+    run_test_combined_stale_and_fifo_eviction();
+    run_test_partial_stale_eviction();
+    run_test_evict_all_entries_empty_list();
+    run_test_boundary_timestamp_exactly_at_cutoff();
+    run_test_timeout_disabled_no_stale_eviction();
+    run_test_remove_head_entry_only();
+    run_test_remove_tail_entry_only();
+    run_test_interleaved_operations_stress();
+    run_test_age_list_consistency_after_many_removals();
 
     printf("\n=== Test Results ===\n");
     printf("Total:  %d\n", tests_run);
