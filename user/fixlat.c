@@ -755,7 +755,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // Populate ingress jump table with tail call programs (indices 1-5 for payload scanning)
+    // Populate ingress jump table with tail call programs (indices 1-7 for payload scanning)
     int ingress_jump_table_fd = bpf_map__fd(skel->maps.ingress_jump_table);
     __u32 idx;
     int prog_fd;
@@ -775,7 +775,13 @@ int main(int argc, char **argv)
     idx = 5; prog_fd = bpf_program__fd(skel->progs.handle_ingress_payload_5);
     bpf_map_update_elem(ingress_jump_table_fd, &idx, &prog_fd, BPF_ANY);
 
-    // Populate egress jump table with tail call programs (indices 1-5 for payload scanning)
+    idx = 6; prog_fd = bpf_program__fd(skel->progs.handle_ingress_payload_6);
+    bpf_map_update_elem(ingress_jump_table_fd, &idx, &prog_fd, BPF_ANY);
+
+    idx = 7; prog_fd = bpf_program__fd(skel->progs.handle_ingress_payload_7);
+    bpf_map_update_elem(ingress_jump_table_fd, &idx, &prog_fd, BPF_ANY);
+
+    // Populate egress jump table with tail call programs (indices 1-7 for payload scanning)
     int egress_jump_table_fd = bpf_map__fd(skel->maps.egress_jump_table);
 
     idx = 1; prog_fd = bpf_program__fd(skel->progs.handle_egress_payload_1);
@@ -791,6 +797,12 @@ int main(int argc, char **argv)
     bpf_map_update_elem(egress_jump_table_fd, &idx, &prog_fd, BPF_ANY);
 
     idx = 5; prog_fd = bpf_program__fd(skel->progs.handle_egress_payload_5);
+    bpf_map_update_elem(egress_jump_table_fd, &idx, &prog_fd, BPF_ANY);
+
+    idx = 6; prog_fd = bpf_program__fd(skel->progs.handle_egress_payload_6);
+    bpf_map_update_elem(egress_jump_table_fd, &idx, &prog_fd, BPF_ANY);
+
+    idx = 7; prog_fd = bpf_program__fd(skel->progs.handle_egress_payload_7);
     bpf_map_update_elem(egress_jump_table_fd, &idx, &prog_fd, BPF_ANY);
 
     int ifindex = if_nametoindex(iface);
