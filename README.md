@@ -9,57 +9,19 @@
 ## Key Features
 
 * **Kernel-level packet capture** using TC (Traffic Control) eBPF hooks on ingress/egress
-* **Zero-copy ring buffers** for efficient kernel-to-userspace communication
 * **FIX protocol parser** that extracts Tag 11 from TCP payloads using tail calls
 * **Dual histogram tracking**:
   - Interval stats (MIN/AVG/MAX) reset every report period
   - Cumulative histogram for long-term percentile analysis (p50, p90, p99, p99.9, p99.99, p99.999)
 * **HDR histogram** with 100ns resolution covering 0-10ms range
-* **TCP port filtering** (bidirectional)
-* **VLAN support** (802.1Q and 802.1ad)
-* **Interactive keyboard controls** for on-demand histogram dumps
-* **BPF CO-RE** (Compile Once, Run Everywhere) for portability across kernel versions
-* **SKB linearization** to handle fragmented packets on egress
-
 
 ### Tested on
 
-eBPF logic is sensitive to verifier constraints (design and tag 11 parsing algorithm heavily influenced by eBPF verifier limitations). Tools was tested on:
+eBPF logic is sensitive to verifier constraints (design and tag 11 parsing algorithm heavily influenced by eBPF verifier limitations). The tool was tested on:
 
 * Ubuntu 24.04.3 LTS (kernel 6.14.0-37-generic)
 * Amazon Linux 2 (kernel 5.10.205)
 
----
-
-## Build
-
-### Prerequisites
-```bash
-# Ubuntu/Debian
-sudo apt install -y clang llvm libbpf-dev libelf-dev bpftool
-
-# Amazon Linux / RHEL
-sudo dnf install -y clang llvm libbpf-devel kernel-devel bpftool
-```
-
-### Compile
-```bash
-make
-```
-
-**Note:** `bpf/vmlinux.h` is committed to the repository for CI compatibility (GitHub Actions lacks BTF support). To regenerate it from your local kernel:
-```bash
-make vmlinux-regenerate
-```
-
-### Build Static Binary (for distribution)
-```bash
-make static
-# Produces user/ebpf-fix-latency-tool-static (2.2MB, no runtime dependencies)
-
-make dist
-# Produces ebpf-fix-latency-tool-0.0.2.zip (versioned distribution package)
-```
 
 ---
 
@@ -206,6 +168,37 @@ sudo ./user/ebpf-fix-latency-tool -i lo -p 8080 -r 5
 
 ---
 
+## Build
+
+### Prerequisites
+```bash
+# Ubuntu/Debian
+sudo apt install -y clang llvm libbpf-dev libelf-dev bpftool
+
+# Amazon Linux / RHEL
+sudo dnf install -y clang llvm libbpf-devel kernel-devel bpftool
+```
+
+### Compile
+```bash
+make
+```
+
+**Note:** `bpf/vmlinux.h` is committed to the repository for CI compatibility (GitHub Actions lacks BTF support). To regenerate it from your local kernel:
+```bash
+make vmlinux-regenerate
+```
+
+### Build Static Binary (for distribution)
+```bash
+make static
+# Produces user/ebpf-fix-latency-tool-static (2.2MB, no runtime dependencies)
+
+make dist
+# Produces ebpf-fix-latency-tool-0.0.2.zip (versioned distribution package)
+```
+---
+
 ## Distribution
 
 See [DISTRIBUTION.md](DISTRIBUTION.md) for deployment options including:
@@ -262,12 +255,6 @@ The program automatically cleans up on exit (Ctrl+C or ESC key).
 - No FIX version restrictions (searches raw TCP payload)
 - Tag 11 must be complete within a single TCP packet (see Limitations)
 
-### Performance
-- **Overhead**: ~1-2% CPU at 100k msg/sec
-- **Latency impact**: <1μs (kernel-level capture)
-- **Memory**: ~2.1MB (ring buffers: 2MB + HDR histogram: ~88KB for 100ms max + hash table)
-- **Histogram**: HDR histogram with 3 significant figures (compact, configurable range via `-x`)
-- **Scalability**: Per-CPU metric maps for lock-free operation
 
 ### Limitations
 - **Tag 11 correlation only**: The tool uses FIX Tag 11 (ClOrdID) exclusively for correlating inbound requests with outbound responses. Other FIX tags (e.g., Tag 37 OrderID, Tag 41 OrigClOrdID) are not supported for correlation.
@@ -312,7 +299,6 @@ Harmless. TC clsact qdisc already exists on interface. The program continues suc
 ### High mismatch count
 - Request-response not correlated (different Tag 11 values)
 - Responses arriving before requests captured (tool started mid-stream)
-- Hash table overflow at very high rates
 
 ### Parser errors (cb_clobbered, parser_stuck)
-Contact maintainer with kernel version and traffic characteristics.
+Contact the author with kernel version and traffic characteristics.
