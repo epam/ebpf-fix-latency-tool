@@ -38,11 +38,11 @@ $(SKEL): $(BPFOBJ)
 	$(BPFTOOL) gen skeleton $< > $@
 
 $(USEROBJ): user/fixlat.c $(SKEL)
-	$(CC) $(CFLAGS) -Ibpf -Iinclude user/fixlat.c -o $@ $(PKG)
+	$(CC) $(CFLAGS) -DVERSION="\"$(VERSION)\"" -Ibpf -Iinclude user/fixlat.c -o $@ $(PKG)
 
 # Static build for distribution (bundles libbpf)
 static: user/fixlat.c $(SKEL)
-	$(CC) $(CFLAGS) -Ibpf -Iinclude user/fixlat.c -o $(USEROBJ)-static \
+	$(CC) $(CFLAGS) -DVERSION="\"$(VERSION)\"" -Ibpf -Iinclude user/fixlat.c -o $(USEROBJ)-static \
 		-static -lbpf -lelf -lz -lzstd
 
 $(TESTOBJ): test/test_parser_logic.c include/fixlat.h

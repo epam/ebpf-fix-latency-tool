@@ -24,7 +24,7 @@
 static volatile bool running = true;
 static int report_every_sec = 5;
 
-#define VERSION "0.0.5"
+// VERSION is now passed by compiler via -DVERSION flag from Makefile
 
 // Pending inbound tag 11 map entry
 struct pending_tag11 {
