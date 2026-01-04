@@ -54,6 +54,10 @@ static uint64_t mismatch_count = 0;
 static uint64_t ingress_events_received = 0;
 static uint64_t egress_events_received = 0;
 
+// Ring buffer processing limits
+static int events_this_poll = 0;
+static const int max_events_per_poll = 128;
+
 // Pending map tracking and eviction
 static uint64_t pending_count = 0;
 static uint64_t max_pending = 16384;
@@ -209,7 +213,7 @@ static int handle_ingress_tag11(void *ctx, void *data, size_t len) {
     struct tag11_with_timestamp *req = data;
     ingress_events_received++;
     pending_map_add(req->ord_id, req->len, req->ts_ns);
-    return 0;
+    return (++events_this_poll >= max_events_per_poll) ? 1 : 0;
 }
 
 static int handle_egress_tag11(void *ctx, void *data, size_t len) {
@@ -224,7 +228,7 @@ static int handle_egress_tag11(void *ctx, void *data, size_t len) {
     } else {
         mismatch_count++;
     }
-    return 0;
+    return (++events_this_poll >= max_events_per_poll) ? 1 : 0;
 }
 
 
@@ -966,26 +970,39 @@ int main(int argc, char **argv)
     enable_raw_mode();
     atexit(disable_raw_mode);
 
-    // Single-threaded main loop: busy-wait poll ringbuffers + periodic stats + keyboard
     struct timespec last_report_time;
     struct timespec last_cleanup_time;
     clock_gettime(CLOCK_MONOTONIC, &last_report_time);
     last_cleanup_time = last_report_time;
 
-    int cleanup_interval_ms = 500;  // Run cleanup every 500ms
+    int cleanup_interval_ms = 500;
+
+    uint64_t iterations_since_housekeeping = 0;
+    const uint64_t max_iterations_between_housekeeping = 10000;
 
     while (running) {
-        // Non-blocking poll of both ringbuffers (timeout=0 for immediate processing)
-        ring_buffer__poll(ingress_rb, 0);
-        ring_buffer__poll(egress_rb, 0);
+        events_this_poll = 0;
+        int ingress_work = ring_buffer__poll(ingress_rb, 0);
+        events_this_poll = 0;
+        int egress_work = ring_buffer__poll(egress_rb, 0);
+        int total_work = ingress_work + egress_work;
 
-        // Handle keyboard input
+        iterations_since_housekeeping++;
+
+        bool should_do_housekeeping = (total_work == 0) ||
+                                      (iterations_since_housekeeping >= max_iterations_between_housekeeping);
+
+        if (!should_do_housekeeping) {
+            continue;
+        }
+
+        iterations_since_housekeeping = 0;
+
         handle_keyboard();
 
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
 
-        // Periodic cleanup of stale entries (separate from stats reporting)
         int64_t cleanup_elapsed_ms = (now.tv_sec - last_cleanup_time.tv_sec) * 1000 +
                                       (now.tv_nsec - last_cleanup_time.tv_nsec) / 1000000;
 
@@ -994,7 +1011,6 @@ int main(int argc, char **argv)
             last_cleanup_time = now;
         }
 
-        // Check if it's time to print stats
         int64_t elapsed_sec = now.tv_sec - last_report_time.tv_sec;
 
         if (elapsed_sec >= report_every_sec) {
