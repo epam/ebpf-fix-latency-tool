@@ -26,14 +26,35 @@ eBPF logic is sensitive to verifier constraints (design and tag 11 parsing algor
 
 ---
 
-## Usage
+## Quick Start
 
-### Basic Example
+### Step 1: Download and Extract
+
 ```bash
-sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
+# Download latest release ZIP
+wget https://github.com/epam/ebpf-fix-latency-tool/releases/latest/download/ebpf-fix-latency-tool-0.0.6.zip
+
+# Extract
+unzip ebpf-fix-latency-tool-0.0.6.zip
+
+# Change to extracted directory
+cd ebpf-fix-latency-tool-0.0.6/
 ```
 
-**Options:**
+Alternatively, download just the static binary:
+```bash
+wget https://github.com/epam/ebpf-fix-latency-tool/releases/latest/download/ebpf-fix-latency-tool-static
+chmod +x ebpf-fix-latency-tool-static
+```
+
+### Step 2: Basic Example
+
+Monitor FIX traffic on interface eth0, port 8080, with 5-second reporting intervals:
+```bash
+sudo ./ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
+```
+
+### Command-Line Options
 - `-i <interface>` : Network interface to monitor (required)
 - `-p <port|range>` : TCP port or range to filter (e.g., `8080` or `12001-12010`) (required)
 - `-r <seconds>` : Stats reporting interval (default: 5)
@@ -43,25 +64,24 @@ sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
 - `-x <milliseconds>` : Maximum latency to track in histogram (default: 100ms)
 - `-v` : Show version and exit
 
-**Port filtering examples:**
-```bash
-# Single port
-sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080
+### Additional Examples
 
-# Port range (12001-12010)
-sudo ./user/ebpf-fix-latency-tool -i eth0 -p 12001-12010
+**Port range:**
+```bash
+# Monitor port range (12001-12010)
+sudo ./ebpf-fix-latency-tool -i eth0 -p 12001-12010
 ```
 
-**CPU pinning example:**
+**CPU pinning for lowest latency:**
 ```bash
-# Pin userspace thread to CPU core 3 with busy-spin polling for lowest latency
-sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080 -c 3
+# Pin userspace thread to CPU core 3 with busy-spin polling
+sudo ./ebpf-fix-latency-tool -i eth0 -p 8080 -c 3
 ```
 
-**Custom histogram range example:**
+**Custom histogram range:**
 ```bash
 # Track latencies up to 500ms (useful for high-latency environments)
-sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080 -x 500
+sudo ./ebpf-fix-latency-tool -i eth0 -p 8080 -x 500
 ```
 
 ### Sample Output
