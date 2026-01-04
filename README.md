@@ -41,11 +41,6 @@ unzip ebpf-fix-latency-tool-0.0.6.zip
 cd ebpf-fix-latency-tool-0.0.6/
 ```
 
-Alternatively, download just the static binary:
-```bash
-wget https://github.com/epam/ebpf-fix-latency-tool/releases/latest/download/ebpf-fix-latency-tool-static
-chmod +x ebpf-fix-latency-tool-static
-```
 
 ### Step 2: Basic Example
 
