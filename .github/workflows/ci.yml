@@ -29,6 +29,14 @@ jobs:
           zlib1g-dev \
           libzstd-dev
 
+    - name: Show build environment
+      run: |
+        echo "=== Build Environment ==="
+        clang --version
+        uname -r
+        bpftool version || echo "bpftool version check failed"
+        echo "========================"
+
     - name: Build project
       run: make
 
