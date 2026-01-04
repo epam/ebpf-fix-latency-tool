@@ -2,6 +2,7 @@ Sample run
 
 AL2, around 280K messages/sec:
 
+TODO: New results after HDR histo addition in 0.0.4
 
 ```
 [ec2-user@ip-10-0-2-70 ebpf-fix-latency-tool-0.0.3]$ sudo ./ebpf-fix-latency-tool -i eth0 -p 12001-12050 -c 5
