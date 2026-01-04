@@ -280,7 +280,11 @@ GPL (required for eBPF programs)
 
 ## Troubleshooting
 
-### "eBPF not available" or permission errors
+### "Make sure your kernel supports BPF" or permission errors
+
+```
+libbpf: Error in bpf_object__probe_loading():Operation not permitted(1). Couldn't load trivial BPF program. Make sure your kernel supports BPF ```
+```
 **Cause**: Tool was run without sudo/root privileges.
 
 **Solution**: eBPF programs require CAP_BPF or root privileges. Always run with sudo:
