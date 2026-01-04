@@ -475,7 +475,32 @@ static void print_latency(uint64_t ns) {
         printf("%lluns", (unsigned long long)ns);
 }
 
-// Dump detailed cumulative histogram
+// Print ASCII bar for histogram visualization
+static void print_histogram_bar(uint64_t count, uint64_t max_count, int bar_width) {
+    int filled = 0;
+    if (max_count > 0) {
+        filled = (int)((count * bar_width) / max_count);
+        if (filled > bar_width) filled = bar_width;
+    }
+
+    for (int i = 0; i < filled; i++) {
+        printf("#");
+    }
+}
+
+// Format latency value for histogram display (compact format)
+static void format_latency_compact(uint64_t ns, char *buf, size_t len) {
+    if (ns < 1000)
+        snprintf(buf, len, "%lluns", (unsigned long long)ns);
+    else if (ns < 1000000)
+        snprintf(buf, len, "%.1fus", ns / 1e3);
+    else if (ns < 1000000000)
+        snprintf(buf, len, "%.2fms", ns / 1e6);
+    else
+        snprintf(buf, len, "%.2fs", ns / 1e9);
+}
+
+// Dump detailed cumulative histogram with ASCII visualization
 static void dump_cumulative_histogram(void) {
     uint64_t total = 0;
     for (uint64_t i = 0; i < num_buckets; i++)
@@ -498,6 +523,93 @@ static void dump_cumulative_histogram(void) {
     printf("P99.99:   "); print_latency(percentile_from_buckets(cumulative_histogram, 99.99)); printf("\n");
     printf("P99.999:  "); print_latency(percentile_from_buckets(cumulative_histogram, 99.999)); printf("\n");
     printf("MAX:      "); print_latency(percentile_from_buckets(cumulative_histogram, 100.0)); printf("\n");
+
+    // ASCII art visualization - intelligently aggregate buckets
+    printf("\nDistribution:\n");
+
+    // Find range of data (first and last non-empty bucket)
+    uint64_t first_bucket = 0, last_bucket = 0;
+    for (uint64_t i = 0; i < num_buckets; i++) {
+        if (cumulative_histogram[i] > 0) {
+            first_bucket = i;
+            break;
+        }
+    }
+    for (uint64_t i = num_buckets - 1; i > 0; i--) {
+        if (cumulative_histogram[i] > 0) {
+            last_bucket = i;
+            break;
+        }
+    }
+
+    if (first_bucket == last_bucket) {
+        // All data in single bucket
+        uint64_t val = hdr_index_to_value(first_bucket);
+        char buf[32];
+        format_latency_compact(val, buf, sizeof(buf));
+        printf("%10s | %llu (100.0%%)\n", buf, (unsigned long long)total);
+    } else {
+        // Aggregate into ~25 display buckets
+        const int num_display_buckets = 25;
+        uint64_t buckets_per_display = (last_bucket - first_bucket + 1) / num_display_buckets;
+        if (buckets_per_display < 1) buckets_per_display = 1;
+
+        uint64_t display_counts[30] = {0};  // Up to 30 display rows
+        uint64_t display_min[30] = {0};
+        uint64_t display_max[30] = {0};
+        int num_displays = 0;
+        uint64_t max_count = 0;
+
+        for (uint64_t i = first_bucket; i <= last_bucket; i += buckets_per_display) {
+            if (num_displays >= 30) break;
+
+            uint64_t end = i + buckets_per_display;
+            if (end > last_bucket + 1) end = last_bucket + 1;
+
+            uint64_t count = 0;
+            for (uint64_t j = i; j < end; j++) {
+                count += cumulative_histogram[j];
+            }
+
+            if (count > 0) {
+                display_min[num_displays] = hdr_index_to_value(i);
+                display_max[num_displays] = hdr_index_to_value(end - 1);
+                display_counts[num_displays] = count;
+                if (count > max_count) max_count = count;
+                num_displays++;
+            }
+        }
+
+        // Format all range strings and find max width for alignment
+        char range_strs[30][32];
+        int max_label_width = 0;
+
+        for (int d = 0; d < num_displays; d++) {
+            char min_buf[16], max_buf[16];
+            format_latency_compact(display_min[d], min_buf, sizeof(min_buf));
+            format_latency_compact(display_max[d], max_buf, sizeof(max_buf));
+
+            if (display_min[d] == display_max[d]) {
+                snprintf(range_strs[d], sizeof(range_strs[d]), "%s", min_buf);
+            } else {
+                snprintf(range_strs[d], sizeof(range_strs[d]), "%s-%s", min_buf, max_buf);
+            }
+
+            int len = strlen(range_strs[d]);
+            if (len > max_label_width) max_label_width = len;
+        }
+
+        // Print bars with aligned labels
+        const int bar_width = 50;
+        for (int d = 0; d < num_displays; d++) {
+            double pct = (100.0 * display_counts[d]) / total;
+
+            printf("%*s |", max_label_width, range_strs[d]);
+            print_histogram_bar(display_counts[d], max_count, bar_width);
+            printf(" %llu (%.1f%%)\n", (unsigned long long)display_counts[d], pct);
+        }
+    }
+
     printf("==============================================================\n\n");
     fflush(stdout);
 }
