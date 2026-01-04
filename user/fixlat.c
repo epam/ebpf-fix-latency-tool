@@ -670,25 +670,6 @@ static void snapshot(int fd_stats, double elapsed_sec) {
         }
     }
 
-    // Main stats line with interval latency (simple: MIN/AVG/MAX)
-    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu | rate: %.0f match/sec | latency: min=",
-        (unsigned long long)interval_count,
-        (unsigned long long)st.inbound_total,
-        (unsigned long long)st.outbound_total,
-        (unsigned long long)mismatch_count,
-        rate);
-
-    if (interval_count > 0) {
-        print_latency(interval_min);
-        printf(" avg=");
-        print_latency(interval_avg);
-        printf(" max=");
-        print_latency(interval_max);
-    } else {
-        printf("- avg=- max=-");
-    }
-    printf("\n");
-
     // Traffic stats with filters on same line
     printf("[traffic] hooks: ingress=%llu egress=%llu | scanned: ingress=%llu egress=%llu",
         (unsigned long long)st.ingress_hook_called,
@@ -708,6 +689,25 @@ static void snapshot(int fd_stats, double elapsed_sec) {
         printf(" | fragmented: ingress=%llu egress=%llu",
             (unsigned long long)st.ingress_fragmented,
             (unsigned long long)st.egress_fragmented);
+    }
+    printf("\n");
+
+    // Main stats line with interval latency (simple: MIN/AVG/MAX)
+    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu | rate: %.0f match/sec | latency: min=",
+        (unsigned long long)interval_count,
+        (unsigned long long)st.inbound_total,
+        (unsigned long long)st.outbound_total,
+        (unsigned long long)mismatch_count,
+        rate);
+
+    if (interval_count > 0) {
+        print_latency(interval_min);
+        printf(" avg=");
+        print_latency(interval_avg);
+        printf(" max=");
+        print_latency(interval_max);
+    } else {
+        printf("- avg=- max=-");
     }
     printf("\n");
 
@@ -835,10 +835,8 @@ int main(int argc, char **argv)
                 (unsigned long long)(num_buckets * sizeof(uint64_t) * 2 / 1024));
         return 1;
     }
-    printf("HDR histogram initialized: %llu buckets (3 sig figs, max %.1fms, ~%llu KB)\n",
-           (unsigned long long)num_buckets,
-           max_latency_ns / 1e6,
-           (unsigned long long)(num_buckets * sizeof(uint64_t) * 2 / 1024));
+    // Store histogram and pending map stats for startup message
+    uint64_t histo_kb = (num_buckets * sizeof(uint64_t) * 2) / 1024;
 
     // Initialize pending map (0.5 load factor)
     if (!pending_map_init(max_pending)) {
@@ -846,10 +844,7 @@ int main(int argc, char **argv)
         free(cumulative_histogram);
         return 1;
     }
-    printf("Pending map initialized: %u buckets for max %llu entries (load factor 0.5, %llu KB)\n",
-           pending_map_size,
-           (unsigned long long)max_pending,
-           (unsigned long long)(pending_map_size * sizeof(struct pending_tag11 *) / 1024));
+    uint64_t pending_kb = (pending_map_size * sizeof(struct pending_tag11 *)) / 1024;
 
     struct rlimit rl={RLIM_INFINITY, RLIM_INFINITY}; setrlimit(RLIMIT_MEMLOCK, &rl);
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
@@ -952,18 +947,20 @@ int main(int argc, char **argv)
 
     // Print startup message
     if (port_min == port_max) {
-        printf("ebpf-fix-latency-tool v%s: attached to %s (port=%u), reporting every %ds\n",
-               VERSION, iface, port_min, report_every_sec);
+        printf("ebpf-fix-latency-tool v%s | %s:%u | tracking up to %lluk pending tags (%lluK RAM) | histogram 0-%.0fms (%lluK RAM)\n",
+               VERSION, iface, port_min, (unsigned long long)(max_pending / 1000),
+               (unsigned long long)pending_kb, max_latency_ns / 1e6, (unsigned long long)histo_kb);
     } else {
-        printf("ebpf-fix-latency-tool v%s: attached to %s (port=%u-%u), reporting every %ds\n",
-               VERSION, iface, port_min, port_max, report_every_sec);
+        printf("ebpf-fix-latency-tool v%s | %s:%u-%u | tracking up to %lluk pending tags (%lluK RAM) | histogram 0-%.0fms (%lluK RAM)\n",
+               VERSION, iface, port_min, port_max, (unsigned long long)(max_pending / 1000),
+               (unsigned long long)pending_kb, max_latency_ns / 1e6, (unsigned long long)histo_kb);
     }
 
     if (cpu_core >= 0) {
         printf("Userspace thread pinned to CPU core %d\n", cpu_core);
     }
 
-    printf("Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands\n");
+    printf("Interval stats: MIN/AVG/MAX (%ds intervals) | Press '?' for keyboard commands\n", report_every_sec);
 
     // Enable raw mode for keyboard input
     enable_raw_mode();
