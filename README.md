@@ -13,7 +13,8 @@
 * **Dual histogram tracking**:
   - Interval stats (MIN/AVG/MAX) reset every report period
   - Cumulative histogram for long-term percentile analysis (p50, p90, p99, p99.9, p99.99, p99.999)
-* **HDR histogram** with 100ns resolution covering 0-10ms range
+* **HDR histogram** with 3 significant figures precision (configurable 0-100ms range by default)
+* **ASCII histogram visualization** for visual distribution analysis
 
 ### Tested on
 
@@ -65,26 +66,21 @@ sudo ./user/ebpf-fix-latency-tool -i eth0 -p 8080 -x 500
 
 ### Sample Output
 
-**Single port:**
+**Production example with CPU pinning:**
 ```
-sudo ./user/ebpf-fix-latency-tool -i wlp0s20f3 -p 8080 -r 5
-ebpf-fix-latency-tool v0.0.2: attached to wlp0s20f3 (port=8080), reporting every 5s
-Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
-[fixlat] matched=325 inbound=325 outbound=325 mismatch=0 | rate: 78 match/sec | latency: min=24.250us avg=64.217us max=165.150us
-[traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325
-[fixlat] matched=390 inbound=715 outbound=715 mismatch=0 | rate: 78 match/sec | latency: min=23.850us avg=63.961us max=203.950us
-[traffic] hooks: ingress=765 egress=716 | scanned: ingress=715 egress=715 | filters: payload_zero=2 payload_small=0
-[fixlat] matched=393 inbound=1108 outbound=1108 mismatch=0 | rate: 79 match/sec | latency: min=23.250us avg=43.723us max=197.750us
-[traffic] hooks: ingress=1166 egress=1109 | scanned: ingress=1108 egress=1108 | filters: payload_zero=2 payload_small=0
-```
-
-**Port range:**
-```
-sudo ./user/ebpf-fix-latency-tool -i eth0 -p 12001-12010 -r 5
-ebpf-fix-latency-tool v0.0.2: attached to eth0 (port=12001-12010), reporting every 5s
-Interval stats: MIN/AVG/MAX | Press '?' for keyboard commands
-[fixlat] matched=412 inbound=412 outbound=412 mismatch=0 | rate: 82 match/sec | latency: min=18.350us avg=52.100us max=124.850us
-[traffic] hooks: ingress=413 egress=412 | scanned: ingress=412 egress=412
+$ sudo ./ebpf-fix-latency-tool -i eth0 -p 12001 -c 5 -r 5
+ebpf-fix-latency-tool v0.0.5 | eth0:12001 | tracking up to 16k pending tags (256K RAM) | histogram 0-100ms (85K RAM)
+Userspace thread pinned to CPU core 5
+Interval stats: MIN/AVG/MAX (5s intervals) | Press '?' for keyboard commands
+[traffic] hooks: ingress=748804 egress=742864 | scanned: ingress=14998 egress=14880 | filters: payload_zero=93 payload_small=2 | fragmented: ingress=0 egress=14880
+[fixlat] matched=14879 inbound=14998 outbound=14880 mismatch=0 | rate: 3661 match/sec | latency: min=12.849us avg=24.105us max=62.849us
+[pending] active=0/16384 stale_evicted=118 forced=0
+[traffic] hooks: ingress=1662788 egress=1656705 | scanned: ingress=33315 egress=33197 | filters: payload_zero=291 payload_small=3 | fragmented: ingress=0 egress=33197
+[fixlat] matched=18317 inbound=33315 outbound=33197 mismatch=0 | rate: 3663 match/sec | latency: min=12.849us avg=24.073us max=87.549us
+[pending] active=1/16384 stale_evicted=118 forced=0
+[traffic] hooks: ingress=2576775 egress=2570257 | scanned: ingress=51616 egress=51498 | filters: payload_zero=902 payload_small=4 | fragmented: ingress=0 egress=51498
+[fixlat] matched=18302 inbound=51616 outbound=51498 mismatch=0 | rate: 3660 match/sec | latency: min=12.849us avg=25.353us max=487.499us
+[pending] active=0/16384 stale_evicted=118 forced=0
 ```
 
 ### Keyboard Controls
@@ -95,18 +91,46 @@ While running, press:
 - **ESC** - Exit program
 - **?** or any other key - Show help
 
-**Example cumulative histogram dump:**
+**Example cumulative histogram dump (press SPACE):**
 ```
-========== CUMULATIVE HISTOGRAM (all-time, n=1384) ==========
-MIN:      23.250us
-AVG:      56.740us
-P50:      62.150us
-P90:      67.850us
-P99:      103.650us
-P99.9:    175.250us
-P99.99:   197.750us
-P99.999:  197.750us
-MAX:      203.950us
+========== CUMULATIVE HISTOGRAM (all-time, n=238774) ==========
+MIN:      12.149us
+AVG:      24.636us
+P50:      23.449us
+P90:      33.549us
+P99:      45.049us
+P99.9:    59.249us
+P99.99:   203.499us
+P99.999:  356.499us
+MAX:      487.499us
+
+Distribution:
+  12.1us-17.0us |################ 24861 (10.4%)
+  17.1us-22.0us |################################################## 73992 (31.0%)
+  22.1us-27.0us |############################################# 67713 (28.4%)
+  27.1us-32.0us |########################### 41146 (17.2%)
+  32.1us-37.0us |############ 19043 (8.0%)
+  37.1us-42.0us |##### 7650 (3.2%)
+  42.1us-47.0us |# 2830 (1.2%)
+  47.1us-52.0us | 941 (0.4%)
+  52.1us-57.0us | 304 (0.1%)
+  57.1us-62.0us | 115 (0.0%)
+  62.1us-67.0us | 54 (0.0%)
+  67.1us-72.0us | 29 (0.0%)
+  72.1us-77.0us | 10 (0.0%)
+  77.1us-82.0us | 8 (0.0%)
+  82.1us-87.0us | 8 (0.0%)
+  87.1us-92.0us | 10 (0.0%)
+  92.1us-97.0us | 4 (0.0%)
+ 97.1us-120.5us | 6 (0.0%)
+121.5us-170.5us | 9 (0.0%)
+171.5us-220.5us | 22 (0.0%)
+221.5us-270.5us | 6 (0.0%)
+271.5us-320.5us | 6 (0.0%)
+321.5us-370.5us | 4 (0.0%)
+371.5us-420.5us | 1 (0.0%)
+421.5us-470.5us | 1 (0.0%)
+471.5us-487.5us | 1 (0.0%)
 ==============================================================
 ```
 
@@ -114,25 +138,25 @@ MAX:      203.950us
 
 ## Output Explained
 
-### Interval Stats (printed every N seconds)
+### Traffic Stats (printed first)
 ```
-[fixlat] matched=325 inbound=325 outbound=325 mismatch=0 | rate: 78 match/sec | latency: min=24.250us avg=64.217us max=165.150us
+[traffic] hooks: ingress=748804 egress=742864 | scanned: ingress=14998 egress=14880 | filters: payload_zero=93 payload_small=2 | fragmented: ingress=0 egress=14880
 ```
-- **matched**: Number of request-response pairs correlated during interval
-- **inbound**: Total Tag 11 values extracted from ingress packets (all-time)
-- **outbound**: Total Tag 11 values extracted from egress packets (all-time)
-- **mismatch**: Egress Tag 11 values with no matching ingress request (all-time)
-- **rate**: Matches per second during interval
-- **latency**: MIN/AVG/MAX latency for matched pairs during interval (resets each report)
+- **hooks**: TC hook invocations (all-time cumulative)
+- **scanned**: Packets that passed filters and started Tag 11 payload scanning (all-time cumulative)
+- **filters**: Packets dropped by filters (empty payload or too small - minimum 32 bytes)
+- **fragmented**: Non-linear packets that required linearization (only shown if non-zero). Common on egress (GSO), rare on ingress (GRO)
 
-### Traffic Stats
+### Latency Stats (printed second)
 ```
-[traffic] hooks: ingress=326 egress=325 | scanned: ingress=325 egress=325 | filters: payload_zero=2 payload_small=0 | fragmented: ingress=0 egress=145
+[fixlat] matched=14879 inbound=14998 outbound=14880 mismatch=0 | rate: 3661 match/sec | latency: min=12.849us avg=24.105us max=62.849us
 ```
-- **hooks**: TC hook invocations (all-time)
-- **scanned**: Packets that passed filters and started payload scanning (all-time)
-- **filters**: Packets dropped by filters (empty payload, too small)
-- **fragmented**: Non-linear packets that required linearization (only shown if non-zero). Common on egress (GSO), rare on ingress (GRO).
+- **matched**: Number of request-response pairs correlated during this interval (resets each report)
+- **inbound**: Total Tag 11 values extracted from ingress packets (all-time cumulative)
+- **outbound**: Total Tag 11 values extracted from egress packets (all-time cumulative)
+- **mismatch**: Egress Tag 11 values with no matching ingress request (all-time cumulative)
+- **rate**: Matches per second during this interval
+- **latency**: MIN/AVG/MAX latency for matched pairs during this interval (resets each report)
 
 ### Error Stats (only shown if non-zero)
 ```
@@ -142,13 +166,13 @@ MAX:      203.950us
 - **tag11_too_long**: Tag 11 value exceeded 24 bytes
 - **parser_stuck**: Tail call scanner made no forward progress
 
-### Pending Map Health (shown if evictions occur or approaching limit)
+### Pending Map Health (printed third)
 ```
-[pending] active=1234/16384 stale_evicted=15 forced=0
+[pending] active=1/16384 stale_evicted=118 forced=0
 ```
-- **active**: Current number of pending requests / maximum allowed
-- **stale_evicted**: Requests evicted due to timeout (TTL expired)
-- **forced**: Requests evicted to make room when at limit (should be rare)
+- **active**: Current number of in-flight pending requests / maximum capacity
+- **stale_evicted**: Requests evicted due to timeout (TTL expired) - cumulative count
+- **forced**: Requests evicted via FIFO to make room when at capacity (should be rare) - cumulative count
 
 ---
 
@@ -192,35 +216,41 @@ make vmlinux-regenerate
 ### Build Static Binary (for distribution)
 ```bash
 make static
-# Produces user/ebpf-fix-latency-tool-static (2.2MB, no runtime dependencies)
+# Produces user/ebpf-fix-latency-tool-static (2.3MB, no runtime dependencies)
 
 make dist
-# Produces ebpf-fix-latency-tool-0.0.2.zip (versioned distribution package)
+# Produces ebpf-fix-latency-tool-VERSION.zip (versioned distribution package)
 ```
 ---
 
 ## Distribution
 
 See [DISTRIBUTION.md](DISTRIBUTION.md) for deployment options including:
+- Pre-built binaries from GitHub releases (recommended)
+- Static binary distribution (no dependencies)
 - Source distribution
-- Static binary distribution (recommended for production)
-- Amazon Linux 2023 / cloud deployment
+- Amazon Linux / cloud deployment
 - Systemd service setup
 
-**Quick deployment:**
+**Quick deployment from GitHub releases:**
 ```bash
-# Build distribution package
-make dist
+# Download latest release
+wget https://github.com/epam/ebpf-fix-latency-tool/releases/latest/download/ebpf-fix-latency-tool-static
 
-# Copy to target server (no dependencies needed!)
-scp ebpf-fix-latency-tool-0.0.2.zip user@server:/tmp/
-
-# On target server
-unzip /tmp/ebpf-fix-latency-tool-0.0.2.zip
-sudo cp ebpf-fix-latency-tool-0.0.2/ebpf-fix-latency-tool /usr/local/bin/
+# Install
+sudo install -m 755 ebpf-fix-latency-tool-static /usr/local/bin/ebpf-fix-latency-tool
 
 # Run
-sudo /usr/local/bin/ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
+sudo ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
+```
+
+**Or build distribution package locally:**
+```bash
+# Build and create ZIP
+make dist
+
+# Deploy (version number read from VERSION file)
+scp ebpf-fix-latency-tool-*.zip user@server:/tmp/
 ```
 
 ---
