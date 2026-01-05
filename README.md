@@ -4,7 +4,14 @@
 
 **Latency measurement tool for FIX protocol traffic using eBPF TC hooks**
 
-`ebpf-fix-latency-tool` is a lightweight eBPF-based tool that measures roundtrip latency for FIX protocol messages by correlating inbound requests with outbound responses. It captures TCP packets at the kernel level, extracts FIX Tag 11 (ClOrdID), matches request-response pairs, and computes in-out latency with nanosecond precision.
+`ebpf-fix-latency-tool` is a lightweight eBPF-based tool that measures roundtrip latency for FIX protocol messages by correlating inbound requests with outbound responses. 
+
+![Outbound to inbound packet correlation](doc/design-diagram.png)
+
+It captures TCP packets at the kernel level, extracts FIX Tag 11 (ClOrdID), matches request-response pairs, and computes in-out latency with nanosecond precision.
+
+![Outbound to inbound packet correlation](doc/inbound-outbound-correlation.png)
+
 
 ## Key Features
 
