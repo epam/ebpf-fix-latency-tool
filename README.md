@@ -8,7 +8,7 @@
 
 ![Design](doc/design-diagram.png)
 
-It captures TCP packets at the kernel level, extracts FIX Tag 11 (ClOrdID), matches request-response pairs, and computes in-out latency with nanosecond precision.
+It captures TCP packets at the kernel level, extracts all occurences of FIX Tag 11 (ClOrdID) and send them together with monotonic timestamp to user space thread. User space thread matches request-response pairs, and computes in-out latency with nanosecond precision. Latencies are collected into HDR histogram. For outbound packets only the first occurence of each FIX tag 11 is processed (assuming first message to contain ACK/NAC for each order request).
 
 ![Outbound to inbound packet correlation](doc/inbound-outbound-correlation.png)
 
