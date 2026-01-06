@@ -29,6 +29,7 @@ eBPF logic is sensitive to verifier constraints (design and tag 11 parsing algor
 
 * Ubuntu 24.04.3 LTS (kernel 6.14.0-37-generic)
 * Amazon Linux 2 (kernel 5.10.205)
+* Amazon Linux 2023 (kernel 6.12.58-82.121.amzn2023.x86_64)
 
 
 ---
@@ -38,13 +39,9 @@ eBPF logic is sensitive to verifier constraints (design and tag 11 parsing algor
 ### Step 1: Download and Extract
 
 ```bash
-# Download latest release ZIP
+# Download latest release and extact it
 wget https://github.com/epam/ebpf-fix-latency-tool/releases/latest/download/ebpf-fix-latency-tool-0.0.6.zip
-
-# Extract
 unzip ebpf-fix-latency-tool-0.0.6.zip
-
-# Change to extracted directory
 cd ebpf-fix-latency-tool-0.0.6/
 ```
 
