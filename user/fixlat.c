@@ -231,11 +231,13 @@ static uint64_t hdr_index_to_value(uint64_t index) {
     return (bucket_min + bucket_max) / 2; // Midpoint
 }
 
-// Dual histograms: interval (reset each report) and cumulative (long-term)
-static uint64_t *interval_histogram = NULL;
+// Interval stats: simple tracking (reset each report)
+static uint64_t interval_sum_ns = 0;
+static uint64_t interval_min_ns = UINT64_MAX;
+static uint64_t interval_max_ns = 0;
+
+// Cumulative histogram: all-time percentile analysis (never reset)
 static uint64_t *cumulative_histogram = NULL;
-static uint64_t interval_sum_ns = 0;  // For AVG calculation
-static uint64_t cumulative_sum_ns = 0;
 
 // Forward declarations for pending map functions
 static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns);
@@ -447,20 +449,30 @@ static void cleanup_stale_entries(struct timespec *now) {
     pending_evict_stale(now_ns);
 }
 
-// Record latency into both interval and cumulative histograms
+// Record latency into cumulative histogram and update interval stats
 static void record_latency(uint64_t latency_ns) {
     if (latency_ns == 0) return;
 
     // Calculate HDR bucket index (3 significant figures)
     uint64_t bucket = hdr_value_to_index(latency_ns);
 
-    // Update both histograms
-    interval_histogram[bucket]++;
+    // Update cumulative histogram only (interval doesn't need histogram)
     cumulative_histogram[bucket]++;
 
-    // Update sums for AVG calculation
-    interval_sum_ns += latency_ns;
-    cumulative_sum_ns += latency_ns;
+    // Update interval sum (with overflow detection, UINT64_MAX = overflow sentinel)
+    if (interval_sum_ns != UINT64_MAX) {
+        uint64_t new_interval_sum = interval_sum_ns + latency_ns;
+        if (new_interval_sum < interval_sum_ns) {
+            // Overflow detected - set to MAX and stop updating
+            interval_sum_ns = UINT64_MAX;
+        } else {
+            interval_sum_ns = new_interval_sum;
+        }
+    }
+
+    // Track actual interval min/max (not clamped to histogram range)
+    if (latency_ns < interval_min_ns) interval_min_ns = latency_ns;
+    if (latency_ns > interval_max_ns) interval_max_ns = latency_ns;
 
     matched_count++;
 }
@@ -550,11 +562,8 @@ static void dump_cumulative_histogram(void) {
         return;
     }
 
-    uint64_t avg = cumulative_sum_ns / total;
-
     printf("\n========== CUMULATIVE HISTOGRAM (all-time, n=%llu) ==========\n", (unsigned long long)total);
     printf("MIN:      "); print_latency(percentile_from_buckets(cumulative_histogram, 0.0)); printf("\n");
-    printf("AVG:      "); print_latency(avg); printf("\n");
     printf("P50:      "); print_latency(percentile_from_buckets(cumulative_histogram, 50.0)); printf("\n");
     printf("P90:      "); print_latency(percentile_from_buckets(cumulative_histogram, 90.0)); printf("\n");
     printf("P99:      "); print_latency(percentile_from_buckets(cumulative_histogram, 99.0)); printf("\n");
@@ -656,7 +665,6 @@ static void dump_cumulative_histogram(void) {
 // Reset cumulative histogram
 static void reset_cumulative_histogram(void) {
     memset(cumulative_histogram, 0, num_buckets * sizeof(uint64_t));
-    cumulative_sum_ns = 0;
     printf("\n[reset] Cumulative histogram cleared\n\n");
     fflush(stdout);
 }
@@ -679,9 +687,11 @@ static void snapshot(int fd_stats, double elapsed_sec) {
     double rate = (elapsed_sec > 0) ? (interval_count / elapsed_sec) : 0.0;
 
     if (interval_count > 0) {
-        interval_min = percentile_from_buckets(interval_histogram, 0.0);
-        interval_avg = interval_sum_ns / interval_count;
-        interval_max = percentile_from_buckets(interval_histogram, 100.0);
+        interval_min = interval_min_ns;
+        if (interval_sum_ns != UINT64_MAX) {
+            interval_avg = interval_sum_ns / interval_count;
+        }
+        interval_max = interval_max_ns;
     }
 
     // Read per-CPU stats and aggregate
@@ -742,7 +752,11 @@ static void snapshot(int fd_stats, double elapsed_sec) {
     if (interval_count > 0) {
         print_latency(interval_min);
         printf(" avg=");
-        print_latency(interval_avg);
+        if (interval_sum_ns == UINT64_MAX) {
+            printf("OVERFLOW");
+        } else {
+            print_latency(interval_avg);
+        }
         printf(" max=");
         print_latency(interval_max);
     } else {
@@ -769,9 +783,10 @@ static void snapshot(int fd_stats, double elapsed_sec) {
 
     fflush(stdout);
 
-    // Reset interval histogram for next period
-    memset(interval_histogram, 0, num_buckets * sizeof(uint64_t));
+    // Reset interval stats for next period
     interval_sum_ns = 0;
+    interval_min_ns = UINT64_MAX;
+    interval_max_ns = 0;
     matched_count = 0;
     mismatch_count = 0;
 }
@@ -878,22 +893,20 @@ int main(int argc, char **argv)
         }
     }
 
-    // Initialize HDR histogram (3 significant figures)
+    // Initialize cumulative HDR histogram (3 significant figures)
     num_buckets = hdr_calculate_num_buckets(max_latency_ns);
-    interval_histogram = calloc(num_buckets, sizeof(uint64_t));
     cumulative_histogram = calloc(num_buckets, sizeof(uint64_t));
-    if (!interval_histogram || !cumulative_histogram) {
+    if (!cumulative_histogram) {
         fprintf(stderr, "Failed to allocate histogram memory (%llu buckets, ~%llu KB)\n",
                 (unsigned long long)num_buckets,
-                (unsigned long long)(num_buckets * sizeof(uint64_t) * 2 / 1024));
+                (unsigned long long)(num_buckets * sizeof(uint64_t) / 1024));
         return 1;
     }
     // Store histogram and pending map stats for startup message
-    uint64_t histo_kb = (num_buckets * sizeof(uint64_t) * 2) / 1024;
+    uint64_t histo_kb = (num_buckets * sizeof(uint64_t)) / 1024;
 
     // Initialize pending map (0.5 load factor)
     if (!pending_map_init(max_pending)) {
-        free(interval_histogram);
         free(cumulative_histogram);
         return 1;
     }
@@ -1096,9 +1109,8 @@ int main(int argc, char **argv)
     bpf_tc_hook_destroy(&egr);
     fixlat_bpf__destroy(skel);
 
-    // Free pending map and histograms
+    // Free pending map and histogram
     pending_map_cleanup();
-    free(interval_histogram);
     free(cumulative_histogram);
 
     return 0;

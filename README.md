@@ -17,9 +17,8 @@ It captures TCP packets at the kernel level, extracts all occurences of FIX Tag 
 
 * **Kernel-level packet capture** using TC (Traffic Control) eBPF hooks on ingress/egress
 * **FIX protocol parser** that extracts Tag 11 from TCP payloads using tail calls
-* **Dual histogram tracking**:
-  - Interval stats (MIN/AVG/MAX) reset every report period
-  - Cumulative histogram for long-term percentile analysis (p50, p90, p99, p99.9, p99.99, p99.999)
+* **Interval stats** (MIN/AVG/MAX) reset every report period
+* **Cumulative histogram** for long-term percentile analysis (p50, p90, p99, p99.9, p99.99, p99.999)
 * **HDR histogram** with 3 significant figures precision (configurable 0-100ms range by default)
 * **ASCII histogram visualization** for visual distribution analysis
 
@@ -118,7 +117,6 @@ While running, press:
 ```
 ========== CUMULATIVE HISTOGRAM (all-time, n=238774) ==========
 MIN:      12.149us
-AVG:      24.636us
 P50:      23.449us
 P90:      33.549us
 P99:      45.049us
