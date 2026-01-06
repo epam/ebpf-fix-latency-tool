@@ -100,6 +100,7 @@ static void idle_strategy_backoff(uint64_t idle_count) {
 }
 
 static idle_strategy_fn idle_strategy = idle_strategy_backoff;
+static const char *idle_strategy_name = "backoff";
 
 static struct termios orig_termios;
 static bool termios_saved = false;
@@ -843,8 +844,10 @@ int main(int argc, char **argv)
             case 's':
                 if (strcmp(optarg, "spin") == 0) {
                     idle_strategy = idle_strategy_busy_spin;
+                    idle_strategy_name = "spin";
                 } else if (strcmp(optarg, "backoff") == 0) {
                     idle_strategy = idle_strategy_backoff;
+                    idle_strategy_name = "backoff";
                 } else {
                     fprintf(stderr, "Invalid idle strategy: %s (use 'spin' or 'backoff')\n", optarg);
                     usage(argv[0]);
@@ -1006,8 +1009,16 @@ int main(int argc, char **argv)
                (unsigned long long)pending_kb, max_latency_ns / 1e6, (unsigned long long)histo_kb);
     }
 
-    if (cpu_core >= 0) {
+    // Display CPU affinity and/or idle strategy info
+    bool has_cpu_affinity = (cpu_core >= 0);
+    bool has_spin_strategy = (strcmp(idle_strategy_name, "spin") == 0);
+
+    if (has_cpu_affinity && has_spin_strategy) {
+        printf("Userspace thread pinned to CPU core %d | CPU spinning idle strategy selected\n", cpu_core);
+    } else if (has_cpu_affinity) {
         printf("Userspace thread pinned to CPU core %d\n", cpu_core);
+    } else if (has_spin_strategy) {
+        printf("CPU spinning idle strategy selected\n");
     }
 
     printf("Interval stats: MIN/AVG/MAX (%ds intervals) | Press '?' for keyboard commands\n", report_every_sec);
