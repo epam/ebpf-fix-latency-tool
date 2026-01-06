@@ -39,9 +39,9 @@ eBPF logic is sensitive to verifier constraints (design and tag 11 parsing algor
 
 ```bash
 # Download latest release and extact it
-wget https://github.com/epam/ebpf-fix-latency-tool/releases/latest/download/ebpf-fix-latency-tool-0.0.6.zip
-unzip ebpf-fix-latency-tool-0.0.6.zip
-cd ebpf-fix-latency-tool-0.0.6/
+wget https://github.com/epam/ebpf-fix-latency-tool/releases/latest/download/ebpf-fix-latency-tool-0.0.7.zip
+unzip ebpf-fix-latency-tool-0.0.7.zip
+cd ebpf-fix-latency-tool-0.0.7/
 ```
 
 
@@ -91,7 +91,7 @@ sudo ./ebpf-fix-latency-tool -i eth0 -p 8080 -x 500
 **Production example with CPU pinning:**
 ```
 $ sudo ./ebpf-fix-latency-tool -i eth0 -p 12001 -c 5 -r 5
-ebpf-fix-latency-tool v0.0.5 | eth0:12001 | tracking up to 16k pending tags (256K RAM) | histogram 0-100ms (85K RAM)
+ebpf-fix-latency-tool v0.0.7 | eth0:12001 | tracking up to 16k pending tags (256K RAM) | histogram 0-100ms (85K RAM)
 Userspace thread pinned to CPU core 5
 Interval stats: MIN/AVG/MAX (5s intervals) | Press '?' for keyboard commands
 [traffic] hooks: ingress=748804 egress=742864 | scanned: ingress=14998 egress=14880 | filters: payload_zero=93 payload_small=2 | fragmented: ingress=0 egress=14880
