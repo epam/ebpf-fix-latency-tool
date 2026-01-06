@@ -16,6 +16,10 @@
 #include <poll.h>
 #include <sched.h>
 
+#ifdef __x86_64__
+#include <immintrin.h>
+#endif
+
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "fixlat.skel.h"
@@ -66,6 +70,36 @@ static uint64_t stale_evicted = 0;
 static uint64_t forced_evicted = 0;
 
 static void on_sig(int s){ (void)s; running=false; }
+
+// Idle strategy function pointer type
+typedef void (*idle_strategy_fn)(uint64_t idle_count);
+
+// Busy-spin idle strategy with x86 PAUSE instruction
+static void idle_strategy_busy_spin(uint64_t idle_count) {
+    (void)idle_count;
+#ifdef __x86_64__
+    _mm_pause();
+#else
+    __asm__ __volatile__("" ::: "memory");
+#endif
+}
+
+// Default idle strategy with progressive backoff
+static void idle_strategy_backoff(uint64_t idle_count) {
+    if (idle_count < 100) {
+#ifdef __x86_64__
+        _mm_pause();
+#else
+        __asm__ __volatile__("" ::: "memory");
+#endif
+    } else if (idle_count < 200) {
+        sched_yield();
+    } else {
+        sched_yield();
+    }
+}
+
+static idle_strategy_fn idle_strategy = idle_strategy_backoff;
 
 static struct termios orig_termios;
 static bool termios_saved = false;
@@ -773,7 +807,7 @@ static int parse_port_range(const char *str, uint16_t *min, uint16_t *max) {
 static void usage(const char *p){
     fprintf(stderr,
         "ebpf-fix-latency-tool v%s - eBPF FIX Protocol Latency Monitor\n\n"
-        "Usage: %s -i <iface> -p <port|range> [-r seconds] [-m max] [-t timeout] [-c cpu] [-x max_ms]\n"
+        "Usage: %s -i <iface> -p <port|range> [-r seconds] [-m max] [-t timeout] [-c cpu] [-x max_ms] [-s strategy]\n"
         "  -i  Network interface to monitor (required)\n"
         "  -p  TCP port or range to watch (e.g., 8080 or 12001-12010) (required)\n"
         "  -r  Report interval in seconds (default: 5)\n"
@@ -781,6 +815,7 @@ static void usage(const char *p){
         "  -t  Request timeout in seconds (default: 0.5)\n"
         "  -c  Pin userspace thread to CPU core (optional)\n"
         "  -x  Maximum latency to track in milliseconds (default: 100)\n"
+        "  -s  Idle strategy: 'spin' (busy-spin) or 'backoff' (default, progressive backoff)\n"
         "  -v  Show version and exit\n", VERSION, p);
 }
 
@@ -791,7 +826,7 @@ int main(int argc, char **argv)
     int cpu_core = -1;
     int opt;
 
-    while ((opt=getopt(argc, argv, "i:p:r:m:t:c:x:v")) != -1) {
+    while ((opt=getopt(argc, argv, "i:p:r:m:t:c:x:s:v")) != -1) {
         switch (opt) {
             case 'i': iface=optarg; break;
             case 'p':
@@ -804,7 +839,18 @@ int main(int argc, char **argv)
             case 'm': max_pending=(uint64_t)atoll(optarg); break;
             case 't': timeout_ns=(uint64_t)(atof(optarg) * 1e9); break;
             case 'c': cpu_core=atoi(optarg); break;
-            case 'x': max_latency_ns=(uint64_t)(atof(optarg) * 1e6); break; // Convert ms to ns
+            case 'x': max_latency_ns=(uint64_t)(atof(optarg) * 1e6); break;
+            case 's':
+                if (strcmp(optarg, "spin") == 0) {
+                    idle_strategy = idle_strategy_busy_spin;
+                } else if (strcmp(optarg, "backoff") == 0) {
+                    idle_strategy = idle_strategy_backoff;
+                } else {
+                    fprintf(stderr, "Invalid idle strategy: %s (use 'spin' or 'backoff')\n", optarg);
+                    usage(argv[0]);
+                    return 1;
+                }
+                break;
             case 'v': printf("ebpf-fix-latency-tool v%s\n", VERSION); return 0;
             default: usage(argv[0]); return 1;
         }
@@ -979,6 +1025,7 @@ int main(int argc, char **argv)
 
     uint64_t iterations_since_housekeeping = 0;
     const uint64_t max_iterations_between_housekeeping = 10000;
+    uint64_t idle_iterations = 0;
 
     while (running) {
         events_this_poll = 0;
@@ -988,6 +1035,12 @@ int main(int argc, char **argv)
         int total_work = ingress_work + egress_work;
 
         iterations_since_housekeeping++;
+
+        if (total_work > 0) {
+            idle_iterations = 0;
+        } else {
+            idle_strategy(idle_iterations++);
+        }
 
         bool should_do_housekeeping = (total_work == 0) ||
                                       (iterations_since_housekeeping >= max_iterations_between_housekeeping);
