@@ -63,7 +63,7 @@ sudo ./ebpf-fix-latency-tool -i eth0 -p 8080 -r 5
 - `-m <max>` : Maximum concurrent pending requests (default: 16384)
 - `-t <seconds>` : Request timeout in seconds (default: 0.5)
 - `-c <cpu>` : Pin userspace thread to specific CPU core for consistent measurements (optional)
-- `-s <strategy>` : Idle strategy - `spin` (busy-spin with PAUSE) or `backoff` (progressive backoff, default)
+- `-s <strategy>` : Idle strategy - `spin` (busy-spin CPU) or `backoff` (progressive backoff, default)
 - `-x <milliseconds>` : Maximum latency to track in histogram (default: 100ms)
 - `-v` : Show version and exit
 
@@ -82,9 +82,6 @@ sudo ./ebpf-fix-latency-tool -i eth0 -p 8080 -c 3
 
 # Pin to CPU core 3 with aggressive busy-spin idle strategy (minimum latency)
 sudo ./ebpf-fix-latency-tool -i eth0 -p 8080 -c 3 -s spin
-
-# Pin to CPU core 3 with progressive backoff (reduced CPU usage when idle)
-sudo ./ebpf-fix-latency-tool -i eth0 -p 8080 -c 3 -s backoff
 ```
 
 **Custom histogram range:**
