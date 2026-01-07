@@ -419,7 +419,7 @@ TEST(hash_collision_handling) {
         uint64_t ts_out = 0;
         bool found = pending_map_remove((uint8_t*)buf, strlen(buf), &ts_out);
         ASSERT(found, "Should find all entries despite collisions");
-        ASSERT_EQ(ts_out, 1000 + i, "Timestamp should match");
+        ASSERT_EQ(ts_out, (uint64_t)(1000 + i), "Timestamp should match");
     }
     ASSERT_EQ(pending_count, 0, "All entries should be removed");
 
@@ -455,7 +455,7 @@ TEST(age_list_order_maintained) {
         char expected[10];
         snprintf(expected, sizeof(expected), "SEQ%d", i);
         ASSERT_EQ(ord_id_matches(curr, expected), 0, "Age list order should match insertion order");
-        ASSERT_EQ(curr->timestamp_ns, 1000 + i * 100, "Timestamp should match");
+        ASSERT_EQ(curr->timestamp_ns, (uint64_t)(1000 + i * 100), "Timestamp should match");
         curr = curr->age_next;
     }
     ASSERT(curr == NULL, "List should end after 10 entries");
