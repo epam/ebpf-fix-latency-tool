@@ -129,7 +129,7 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
             __u8 c = *p;
         
             if (c == SOH) { // Tag 11 ends
-                req.len = i;
+                req.ord_id_len = i;
                 found_tag11_end = true;
                 break;
             } else {  
@@ -138,8 +138,8 @@ static __always_inline int handle_payload_chunk(struct __sk_buff *skb, __u32 idx
         }
 
         if (found_tag11_end) {
-            if (req.len > 0) {
-                req.ts_ns = bpf_ktime_get_ns();
+            if (req.ord_id_len > 0) {
+                req.timestamp_ns = bpf_ktime_get_ns();
                 bpf_ringbuf_output(ringbuf, &req, sizeof(req), 0);
 
                 // Track successful tag 11 extraction

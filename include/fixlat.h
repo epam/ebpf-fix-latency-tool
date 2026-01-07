@@ -10,9 +10,9 @@
 
 
 struct tag11_with_timestamp {
-    __u64 ts_ns;
-    __u8  len;
+    __u64 timestamp_ns;
     __u8  ord_id[FIXLAT_MAX_TAGVAL_LEN];
+    __u8  ord_id_len;
 };
 
 struct fixlat_stats {

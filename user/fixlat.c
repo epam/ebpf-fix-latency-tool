@@ -32,7 +32,8 @@ static int report_every_sec = 5;
 
 // Pending inbound tag 11 map entry
 struct pending_tag11 {
-    char key[FIXLAT_MAX_TAGVAL_LEN + 1]; // tag 11 value as string key
+    char ord_id[FIXLAT_MAX_TAGVAL_LEN]; // tag 11 value as string key
+    uint8_t ord_id_len;                 // actual length of tag 11 value
     uint64_t timestamp_ns;
     uint32_t hash; // precomputed bucket index
 
@@ -55,6 +56,8 @@ static struct pending_tag11 *pending_age_tail = NULL; // newest
 // Userspace stats
 static uint64_t matched_count = 0;
 static uint64_t mismatch_count = 0;
+static uint64_t negative_latency_count = 0;
+static uint64_t zero_timestamp_count = 0;
 static uint64_t ingress_events_received = 0;
 static uint64_t egress_events_received = 0;
 
@@ -249,7 +252,7 @@ static int handle_ingress_tag11(void *ctx, void *data, size_t len) {
     (void)ctx; (void)len;
     struct tag11_with_timestamp *req = data;
     ingress_events_received++;
-    pending_map_add(req->ord_id, req->len, req->ts_ns);
+    pending_map_add(req->ord_id, req->ord_id_len, req->timestamp_ns);
     return (++events_this_poll >= max_events_per_poll) ? 1 : 0;
 }
 
@@ -259,9 +262,17 @@ static int handle_egress_tag11(void *ctx, void *data, size_t len) {
     egress_events_received++;
 
     uint64_t inbound_ts_ns;
-    if (pending_map_remove(req->ord_id, req->len, &inbound_ts_ns)) {
-        uint64_t latency_ns = req->ts_ns - inbound_ts_ns;
-        record_latency(latency_ns);
+    if (pending_map_remove(req->ord_id, req->ord_id_len, &inbound_ts_ns)) {
+        // Validate timestamps (detect corrupted/uninitialized values)
+        if (req->timestamp_ns == 0 || inbound_ts_ns == 0) {
+            zero_timestamp_count++;
+        } else if (req->timestamp_ns < inbound_ts_ns) {
+            // Clock going backwards (egress timestamp < ingress timestamp)
+            negative_latency_count++;
+        } else {
+            uint64_t latency_ns = req->timestamp_ns - inbound_ts_ns;
+            record_latency(latency_ns);
+        }
     } else {
         mismatch_count++;
     }
@@ -370,11 +381,11 @@ static void pending_remove_entry(struct pending_tag11 *victim) {
 }
 
 // Evict stale entries from the head of the age list.
-static uint64_t pending_evict_stale(uint64_t now_ns) {
+static uint64_t pending_evict_stale(uint64_t timestamp_threshold_ns) {
     if (timeout_ns == 0)
         return 0;
 
-    uint64_t cutoff_ns = now_ns - timeout_ns;
+    uint64_t cutoff_ns = timestamp_threshold_ns - timeout_ns;
     uint64_t evicted = 0;
 
     while (pending_age_head && pending_age_head->timestamp_ns < cutoff_ns) {
@@ -388,9 +399,9 @@ static uint64_t pending_evict_stale(uint64_t now_ns) {
 }
 
 // Add inbound tag 11 to pending map
-static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns) {
+static void pending_map_add(const uint8_t *ord_id, uint8_t ord_id_len, uint64_t timestamp_ns) {
     // First evict anything stale (O(#stale) using age list)
-    pending_evict_stale(ts_ns);
+    pending_evict_stale(timestamp_ns);
 
     // If still at limit, evict oldest unclaimed entries (FIFO) until we have space.
     while (pending_count >= max_pending && pending_age_head) {
@@ -407,11 +418,11 @@ static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns) 
     if (!entry) return;
 
     memset(entry, 0, sizeof(*entry));
-    memcpy(entry->key, ord_id, len);
-    entry->key[len] = '\0';
+    memcpy(entry->ord_id, ord_id, ord_id_len);
+    entry->ord_id_len = ord_id_len;
 
-    entry->timestamp_ns = ts_ns;
-    entry->hash = hash_tag11(entry->key, len);
+    entry->timestamp_ns = timestamp_ns;
+    entry->hash = hash_tag11(entry->ord_id, ord_id_len);
 
     entry->next = pending_map[entry->hash];
     pending_map[entry->hash] = entry;
@@ -421,14 +432,13 @@ static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns) 
 }
 
 // Lookup and remove outbound tag 11 from pending map
-static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out_ts_ns) {
-    char key[FIXLAT_MAX_TAGVAL_LEN + 1] = {0};
-    memcpy(key, ord_id, len);
-    uint32_t hash = hash_tag11(key, len);
+static bool pending_map_remove(const uint8_t *ord_id, uint8_t ord_id_len, uint64_t *out_ts_ns) {
+    uint32_t hash = hash_tag11((const char *)ord_id, ord_id_len);
 
     struct pending_tag11 **curr = &pending_map[hash];
     while (*curr) {
-        if (memcmp((*curr)->key, key, len) == 0 && (*curr)->key[len] == '\0') {
+        // Match requires: same length AND same key value
+        if ((*curr)->ord_id_len == ord_id_len && memcmp((*curr)->ord_id, ord_id, ord_id_len) == 0) {
             *out_ts_ns = (*curr)->timestamp_ns;
             struct pending_tag11 *to_free = *curr;
             *curr = (*curr)->next;
@@ -742,11 +752,13 @@ static void snapshot(int fd_stats, double elapsed_sec) {
     printf("\n");
 
     // Main stats line with interval latency (simple: MIN/AVG/MAX)
-    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu | rate: %.0f match/sec | latency: min=",
+    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu zero_ts=%llu negative=%llu | rate: %.0f match/sec | latency: min=",
         (unsigned long long)interval_count,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
         (unsigned long long)mismatch_count,
+        (unsigned long long)zero_timestamp_count,
+        (unsigned long long)negative_latency_count,
         rate);
 
     if (interval_count > 0) {
@@ -789,6 +801,8 @@ static void snapshot(int fd_stats, double elapsed_sec) {
     interval_max_ns = 0;
     matched_count = 0;
     mismatch_count = 0;
+    zero_timestamp_count = 0;
+    negative_latency_count = 0;
 }
 
 // Parse port range from string (e.g., "8080" or "12001-12010")
