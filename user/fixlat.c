@@ -30,6 +30,11 @@ static int report_every_sec = 5;
 
 // VERSION is now passed by compiler via -DVERSION flag from Makefile
 
+// Time conversion constants
+#define NANOS_IN_SECOND 1000000000ULL
+#define NANOS_IN_MS     1000000ULL
+#define NANOS_IN_US     1000ULL
+
 // Pending inbound tag 11 map entry
 struct pending_tag11 {
     char ord_id[FIXLAT_MAX_TAGVAL_LEN]; // tag 11 value as string key
@@ -112,7 +117,11 @@ static bool termios_saved = false;
 static void dump_cumulative_histogram(void);
 static void reset_cumulative_histogram(void);
 static void show_keyboard_help(void);
-static void cleanup_stale_entries(struct timespec *now);
+
+// Helper: convert timespec to nanoseconds (monotonic epoch time)
+static inline uint64_t timespec_to_ns(const struct timespec *ts) {
+    return ts->tv_sec * NANOS_IN_SECOND + ts->tv_nsec;
+}
 
 // Set terminal to raw mode for non-blocking keyboard input
 static void enable_raw_mode(void) {
@@ -452,13 +461,6 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t ord_id_len, uint64
     return false;
 }
 
-// Evict stale entries (older than timeout) using age list
-// Called during idle time every 500ms
-static void cleanup_stale_entries(struct timespec *now) {
-    uint64_t now_ns = now->tv_sec * 1000000000ULL + now->tv_nsec;
-    pending_evict_stale(now_ns);
-}
-
 // Record latency into cumulative histogram and update interval stats
 static void record_latency(uint64_t latency_ns) {
     if (latency_ns == 0) return;
@@ -553,12 +555,12 @@ static void print_histogram_bar(uint64_t count, uint64_t max_count, int bar_widt
 static void format_latency_compact(uint64_t ns, char *buf, size_t len) {
     if (ns < 1000)
         snprintf(buf, len, "%lluns", (unsigned long long)ns);
-    else if (ns < 1000000)
-        snprintf(buf, len, "%.1fus", ns / 1e3);
-    else if (ns < 1000000000)
-        snprintf(buf, len, "%.2fms", ns / 1e6);
+    else if (ns < NANOS_IN_MS)
+        snprintf(buf, len, "%.1fus", ns / (double)NANOS_IN_US);
+    else if (ns < NANOS_IN_SECOND)
+        snprintf(buf, len, "%.2fms", ns / (double)NANOS_IN_MS);
     else
-        snprintf(buf, len, "%.2fs", ns / 1e9);
+        snprintf(buf, len, "%.2fs", ns / (double)NANOS_IN_SECOND);
 }
 
 // Dump detailed cumulative histogram with ASCII visualization
@@ -867,9 +869,9 @@ int main(int argc, char **argv)
                 break;
             case 'r': report_every_sec=atoi(optarg); break;
             case 'm': max_pending=(uint64_t)atoll(optarg); break;
-            case 't': timeout_ns=(uint64_t)(atof(optarg) * 1e9); break;
+            case 't': timeout_ns=(uint64_t)(atof(optarg) * (double)NANOS_IN_SECOND); break;
             case 'c': cpu_core=atoi(optarg); break;
-            case 'x': max_latency_ns=(uint64_t)(atof(optarg) * 1e6); break;
+            case 'x': max_latency_ns=(uint64_t)(atof(optarg) * (double)NANOS_IN_MS); break;
             case 's':
                 if (strcmp(optarg, "spin") == 0) {
                     idle_strategy = idle_strategy_busy_spin;
@@ -1029,11 +1031,11 @@ int main(int argc, char **argv)
     if (port_min == port_max) {
         printf("ebpf-fix-latency-tool v%s | %s:%u | tracking up to %lluk pending tags (%lluK RAM) | histogram 0-%.0fms (%lluK RAM)\n",
                VERSION, iface, port_min, (unsigned long long)(max_pending / 1000),
-               (unsigned long long)pending_kb, max_latency_ns / 1e6, (unsigned long long)histo_kb);
+               (unsigned long long)pending_kb, max_latency_ns / (double)NANOS_IN_MS, (unsigned long long)histo_kb);
     } else {
         printf("ebpf-fix-latency-tool v%s | %s:%u-%u | tracking up to %lluk pending tags (%lluK RAM) | histogram 0-%.0fms (%lluK RAM)\n",
                VERSION, iface, port_min, port_max, (unsigned long long)(max_pending / 1000),
-               (unsigned long long)pending_kb, max_latency_ns / 1e6, (unsigned long long)histo_kb);
+               (unsigned long long)pending_kb, max_latency_ns / (double)NANOS_IN_MS, (unsigned long long)histo_kb);
     }
 
     // Display CPU affinity and/or idle strategy info
@@ -1054,12 +1056,12 @@ int main(int argc, char **argv)
     enable_raw_mode();
     atexit(disable_raw_mode);
 
-    struct timespec last_report_time;
-    struct timespec last_cleanup_time;
-    clock_gettime(CLOCK_MONOTONIC, &last_report_time);
-    last_cleanup_time = last_report_time;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t last_report_ns = timespec_to_ns(&ts);
+    uint64_t last_cleanup_ns = last_report_ns;
 
-    int cleanup_interval_ms = 500;
+    double cleanup_interval_sec = 0.5;
 
     uint64_t iterations_since_housekeeping = 0;
     const uint64_t max_iterations_between_housekeeping = 10000;
@@ -1093,22 +1095,18 @@ int main(int argc, char **argv)
 
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t now_ns = timespec_to_ns(&now);
 
-        int64_t cleanup_elapsed_ms = (now.tv_sec - last_cleanup_time.tv_sec) * 1000 +
-                                      (now.tv_nsec - last_cleanup_time.tv_nsec) / 1000000;
-
-        if (cleanup_elapsed_ms >= cleanup_interval_ms) {
-            cleanup_stale_entries(&now);
-            last_cleanup_time = now;
+        double cleanup_elapsed_sec = (now_ns - last_cleanup_ns) / (double)NANOS_IN_SECOND;
+        if (cleanup_elapsed_sec >= cleanup_interval_sec) {
+            pending_evict_stale(now_ns);
+            last_cleanup_ns = now_ns;
         }
 
-        int64_t elapsed_sec = now.tv_sec - last_report_time.tv_sec;
-
-        if (elapsed_sec >= report_every_sec) {
-            double precise_elapsed = (now.tv_sec - last_report_time.tv_sec) +
-                                     (now.tv_nsec - last_report_time.tv_nsec) / 1e9;
-            snapshot(fd_stats, precise_elapsed);
-            last_report_time = now;
+        double report_elapsed_sec = (now_ns - last_report_ns) / (double)NANOS_IN_SECOND;
+        if (report_elapsed_sec >= report_every_sec) {
+            snapshot(fd_stats, report_elapsed_sec);
+            last_report_ns = now_ns;
         }
     }
 
