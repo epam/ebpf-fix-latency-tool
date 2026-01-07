@@ -62,7 +62,7 @@ static struct pending_tag11 *pending_age_tail = NULL; // newest
 static uint64_t matched_count = 0;
 static uint64_t mismatch_count = 0;
 static uint64_t negative_latency_count = 0;
-static uint64_t zero_timestamp_count = 0;
+static uint64_t duplicate_ingress_ids = 0;
 static uint64_t ingress_events_received = 0;
 static uint64_t egress_events_received = 0;
 
@@ -272,10 +272,7 @@ static int handle_egress_tag11(void *ctx, void *data, size_t len) {
 
     uint64_t inbound_ts_ns;
     if (pending_map_remove(req->ord_id, req->ord_id_len, &inbound_ts_ns)) {
-        // Validate timestamps (detect corrupted/uninitialized values)
-        if (req->timestamp_ns == 0 || inbound_ts_ns == 0) {
-            zero_timestamp_count++;
-        } else if (req->timestamp_ns < inbound_ts_ns) {
+        if (req->timestamp_ns < inbound_ts_ns) {
             // Clock going backwards (egress timestamp < ingress timestamp)
             negative_latency_count++;
         } else {
@@ -423,18 +420,31 @@ static void pending_map_add(const uint8_t *ord_id, uint8_t ord_id_len, uint64_t 
         return;
     }
 
+    // Traverse to tail, checking for duplicates along the way (FIFO: oldest first, newest last)
+    uint32_t hash = hash_tag11((const char *)ord_id, ord_id_len);
+    struct pending_tag11 **curr = &pending_map[hash];
+
+    while (*curr) {
+        if ((*curr)->ord_id_len == ord_id_len && memcmp((*curr)->ord_id, ord_id, ord_id_len) == 0) {
+            // Duplicate found - do not add
+            duplicate_ingress_ids++;
+            return;
+        }
+        curr = &(*curr)->next;
+    }
+    // Now *curr points to the tail (NULL) - this is where we'll insert
+
     struct pending_tag11 *entry = malloc(sizeof(*entry));
     if (!entry) return;
 
-    memset(entry, 0, sizeof(*entry));
     memcpy(entry->ord_id, ord_id, ord_id_len);
     entry->ord_id_len = ord_id_len;
-
     entry->timestamp_ns = timestamp_ns;
-    entry->hash = hash_tag11(entry->ord_id, ord_id_len);
+    entry->hash = hash;
+    entry->next = NULL;
 
-    entry->next = pending_map[entry->hash];
-    pending_map[entry->hash] = entry;
+    // Insert at tail (FIFO ordering)
+    *curr = entry;
 
     pending_age_append(entry);
     pending_count++;
@@ -754,12 +764,12 @@ static void snapshot(int fd_stats, double elapsed_sec) {
     printf("\n");
 
     // Main stats line with interval latency (simple: MIN/AVG/MAX)
-    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu zero_ts=%llu negative=%llu | rate: %.0f match/sec | latency: min=",
+    printf("[fixlat] matched=%llu inbound=%llu outbound=%llu mismatch=%llu dup_ingress=%llu negative=%llu | rate: %.0f match/sec | latency: min=",
         (unsigned long long)interval_count,
         (unsigned long long)st.inbound_total,
         (unsigned long long)st.outbound_total,
         (unsigned long long)mismatch_count,
-        (unsigned long long)zero_timestamp_count,
+        (unsigned long long)duplicate_ingress_ids,
         (unsigned long long)negative_latency_count,
         rate);
 
@@ -803,7 +813,7 @@ static void snapshot(int fd_stats, double elapsed_sec) {
     interval_max_ns = 0;
     matched_count = 0;
     mismatch_count = 0;
-    zero_timestamp_count = 0;
+    duplicate_ingress_ids = 0;
     negative_latency_count = 0;
 }
 

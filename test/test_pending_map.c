@@ -59,10 +59,12 @@ static bool current_test_failed = false;
 // ============================================================================
 
 struct pending_tag11 {
-    char key[FIXLAT_MAX_TAGVAL_LEN + 1];
+    char ord_id[FIXLAT_MAX_TAGVAL_LEN]; // tag 11 value as string key
+    uint8_t ord_id_len;                 // actual length of tag 11 value
     uint64_t timestamp_ns;
-    uint32_t hash;
-    struct pending_tag11 *next;
+    uint32_t hash; // precomputed bucket index
+    struct pending_tag11 *next; // hash table chaining
+    // Global age-ordered list (oldest=head). Used for O(1) eviction.
     struct pending_tag11 *age_prev;
     struct pending_tag11 *age_next;
 };
@@ -76,6 +78,7 @@ static uint64_t max_pending = 0;
 static uint64_t timeout_ns = 0;
 static uint64_t stale_evicted = 0;
 static uint64_t forced_evicted = 0;
+static uint64_t duplicate_ingress_ids = 0;
 
 static uint32_t next_power_of_2(uint32_t n) {
     if (n == 0) return 1;
@@ -118,6 +121,7 @@ static void pending_map_cleanup(void) {
     timeout_ns = 0;
     stale_evicted = 0;
     forced_evicted = 0;
+    duplicate_ingress_ids = 0;
 }
 
 static uint32_t hash_tag11(const char *key, uint8_t len) {
@@ -125,6 +129,14 @@ static uint32_t hash_tag11(const char *key, uint8_t len) {
     for (uint8_t i = 0; i < len; i++)
         hash = ((hash << 5) + hash) + key[i];
     return hash % pending_map_size;
+}
+
+// Test helper: compare entry's ord_id with expected string (returns 0 if match, like strcmp)
+static int ord_id_matches(struct pending_tag11 *entry, const char *expected) {
+    uint8_t expected_len = strlen(expected);
+    if (entry->ord_id_len != expected_len)
+        return 1;
+    return memcmp(entry->ord_id, expected, expected_len);
 }
 
 static inline void pending_age_append(struct pending_tag11 *e) {
@@ -183,43 +195,58 @@ static uint64_t pending_evict_stale(uint64_t now_ns) {
     return evicted;
 }
 
-static void pending_map_add(const uint8_t *ord_id, uint8_t len, uint64_t ts_ns) {
-    pending_evict_stale(ts_ns);
+static void pending_map_add(const uint8_t *ord_id, uint8_t ord_id_len, uint64_t timestamp_ns) {
+    // First evict anything stale (O(#stale) using age list)
+    pending_evict_stale(timestamp_ns);
 
+    // If still at limit, evict oldest unclaimed entries (FIFO) until we have space.
     while (pending_count >= max_pending && pending_age_head) {
         pending_remove_entry(pending_age_head);
         forced_evicted++;
     }
 
     if (pending_count >= max_pending) {
+        // No space and nothing to evict (should only happen if max_pending==0)
         return;
     }
+
+    // Traverse to tail, checking for duplicates along the way (FIFO: oldest first, newest last)
+    uint32_t hash = hash_tag11((const char *)ord_id, ord_id_len);
+    struct pending_tag11 **curr = &pending_map[hash];
+
+    while (*curr) {
+        if ((*curr)->ord_id_len == ord_id_len && memcmp((*curr)->ord_id, ord_id, ord_id_len) == 0) {
+            // Duplicate found - do not add
+            duplicate_ingress_ids++;
+            return;
+        }
+        curr = &(*curr)->next;
+    }
+    // Now *curr points to the tail (NULL) - this is where we'll insert
 
     struct pending_tag11 *entry = malloc(sizeof(*entry));
     if (!entry) return;
 
-    memset(entry, 0, sizeof(*entry));
-    memcpy(entry->key, ord_id, len);
-    entry->key[len] = '\0';
+    memcpy(entry->ord_id, ord_id, ord_id_len);
+    entry->ord_id_len = ord_id_len;
+    entry->timestamp_ns = timestamp_ns;
+    entry->hash = hash;
+    entry->next = NULL;
 
-    entry->timestamp_ns = ts_ns;
-    entry->hash = hash_tag11(entry->key, len);
-
-    entry->next = pending_map[entry->hash];
-    pending_map[entry->hash] = entry;
+    // Insert at tail (FIFO ordering)
+    *curr = entry;
 
     pending_age_append(entry);
     pending_count++;
 }
 
-static bool pending_map_remove(const uint8_t *ord_id, uint8_t len, uint64_t *out_ts_ns) {
-    char key[FIXLAT_MAX_TAGVAL_LEN + 1] = {0};
-    memcpy(key, ord_id, len);
-    uint32_t hash = hash_tag11(key, len);
+static bool pending_map_remove(const uint8_t *ord_id, uint8_t ord_id_len, uint64_t *out_ts_ns) {
+    uint32_t hash = hash_tag11((const char *)ord_id, ord_id_len);
 
     struct pending_tag11 **curr = &pending_map[hash];
     while (*curr) {
-        if (memcmp((*curr)->key, key, len) == 0 && (*curr)->key[len] == '\0') {
+        // Match requires: same length AND same key value
+        if ((*curr)->ord_id_len == ord_id_len && memcmp((*curr)->ord_id, ord_id, ord_id_len) == 0) {
             *out_ts_ns = (*curr)->timestamp_ns;
             struct pending_tag11 *to_free = *curr;
             *curr = (*curr)->next;
@@ -298,9 +325,9 @@ TEST(add_multiple_entries) {
 
     // Verify age list order (oldest first)
     ASSERT(pending_age_head != NULL, "Head should exist");
-    ASSERT_EQ(strcmp(pending_age_head->key, "ORDER1"), 0, "Head should be ORDER1 (oldest)");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "ORDER1"), 0, "Head should be ORDER1 (oldest)");
     ASSERT(pending_age_tail != NULL, "Tail should exist");
-    ASSERT_EQ(strcmp(pending_age_tail->key, "ORDER3"), 0, "Tail should be ORDER3 (newest)");
+    ASSERT_EQ(ord_id_matches(pending_age_tail, "ORDER3"), 0, "Tail should be ORDER3 (newest)");
     pending_map_cleanup();
 }
 
@@ -317,8 +344,8 @@ TEST(remove_middle_entry) {
     ASSERT_EQ(pending_count, 2, "Should have 2 entries left");
 
     // Verify age list integrity
-    ASSERT_EQ(strcmp(pending_age_head->key, "ORDER1"), 0, "Head should still be ORDER1");
-    ASSERT_EQ(strcmp(pending_age_tail->key, "ORDER3"), 0, "Tail should still be ORDER3");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "ORDER1"), 0, "Head should still be ORDER1");
+    ASSERT_EQ(ord_id_matches(pending_age_tail, "ORDER3"), 0, "Tail should still be ORDER3");
     ASSERT(pending_age_head->age_next == pending_age_tail, "ORDER1 next should be ORDER3");
     ASSERT(pending_age_tail->age_prev == pending_age_head, "ORDER3 prev should be ORDER1");
     pending_map_cleanup();
@@ -341,7 +368,7 @@ TEST(stale_eviction) {
 
     ASSERT_EQ(pending_count, 1, "Should have 1 entry after stale eviction");
     ASSERT_EQ(stale_evicted, 2, "Should have evicted 2 stale entries");
-    ASSERT_EQ(strcmp(pending_age_head->key, "NEW1"), 0, "Head should be NEW1 after eviction");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "NEW1"), 0, "Head should be NEW1 after eviction");
     ASSERT(pending_age_head == pending_age_tail, "Should only have one entry");
 
     // Add another entry that doesn't trigger eviction
@@ -368,8 +395,8 @@ TEST(fifo_eviction_at_capacity) {
     pending_map_add((uint8_t*)"ORD5", 4, 1005);
     ASSERT_EQ(pending_count, 5, "Should still be at capacity");
     ASSERT_EQ(forced_evicted, 1, "Should have 1 forced eviction");
-    ASSERT_EQ(strcmp(pending_age_head->key, "ORD1"), 0, "Head should be ORD1 (ORD0 evicted)");
-    ASSERT_EQ(strcmp(pending_age_tail->key, "ORD5"), 0, "Tail should be ORD5");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "ORD1"), 0, "Head should be ORD1 (ORD0 evicted)");
+    ASSERT_EQ(ord_id_matches(pending_age_tail, "ORD5"), 0, "Tail should be ORD5");
 
     pending_map_cleanup();
 }
@@ -427,7 +454,7 @@ TEST(age_list_order_maintained) {
         ASSERT(curr != NULL, "List should have 10 entries");
         char expected[10];
         snprintf(expected, sizeof(expected), "SEQ%d", i);
-        ASSERT_EQ(strcmp(curr->key, expected), 0, "Age list order should match insertion order");
+        ASSERT_EQ(ord_id_matches(curr, expected), 0, "Age list order should match insertion order");
         ASSERT_EQ(curr->timestamp_ns, 1000 + i * 100, "Timestamp should match");
         curr = curr->age_next;
     }
@@ -478,7 +505,7 @@ TEST(combined_stale_and_fifo_eviction) {
     ASSERT_EQ(pending_count, 1, "Should have only new entry");
     ASSERT_EQ(stale_evicted, 5, "Should have evicted 5 stale entries");
     ASSERT_EQ(forced_evicted, 0, "No forced evictions needed - stale cleanup made room");
-    ASSERT_EQ(strcmp(pending_age_head->key, "NEW"), 0, "Head should be NEW");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "NEW"), 0, "Head should be NEW");
 
     pending_map_cleanup();
 }
@@ -507,8 +534,8 @@ TEST(partial_stale_eviction) {
 
     ASSERT_EQ(pending_count, 3, "Should have 3 entries (evicted 3 stale)");
     ASSERT_EQ(stale_evicted, 3, "Should have evicted exactly 3 stale entries");
-    ASSERT_EQ(strcmp(pending_age_head->key, "FRESH2"), 0, "Head should be FRESH2");
-    ASSERT_EQ(strcmp(pending_age_tail->key, "NEW"), 0, "Tail should be NEW");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "FRESH2"), 0, "Head should be FRESH2");
+    ASSERT_EQ(ord_id_matches(pending_age_tail, "NEW"), 0, "Tail should be NEW");
 
     pending_map_cleanup();
 }
@@ -533,7 +560,7 @@ TEST(evict_all_entries_empty_list) {
     ASSERT(pending_age_head != NULL, "Head should not be NULL");
     ASSERT(pending_age_tail != NULL, "Tail should not be NULL");
     ASSERT(pending_age_head == pending_age_tail, "Head and tail should be same (single entry)");
-    ASSERT_EQ(strcmp(pending_age_head->key, "NEW"), 0, "Only entry should be NEW");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "NEW"), 0, "Only entry should be NEW");
 
     // Now remove the last entry
     uint64_t ts_out;
@@ -567,7 +594,7 @@ TEST(boundary_timestamp_exactly_at_cutoff) {
     // Only BEFORE should be evicted (timestamp < cutoff)
     ASSERT_EQ(pending_count, 3, "Should have 3 entries (EXACT, AFTER, NEW)");
     ASSERT_EQ(stale_evicted, 1, "Only BEFORE should be evicted");
-    ASSERT_EQ(strcmp(pending_age_head->key, "EXACT"), 0, "EXACT should not be evicted");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "EXACT"), 0, "EXACT should not be evicted");
 
     pending_map_cleanup();
 }
@@ -593,7 +620,7 @@ TEST(timeout_disabled_no_stale_eviction) {
     ASSERT_EQ(pending_count, 5, "Still at capacity");
     ASSERT_EQ(stale_evicted, 0, "Still no stale evictions");
     ASSERT_EQ(forced_evicted, 1, "Should use FIFO eviction instead");
-    ASSERT_EQ(strcmp(pending_age_head->key, "OLD1"), 0, "OLD0 evicted, OLD1 is now head");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "OLD1"), 0, "OLD0 evicted, OLD1 is now head");
 
     pending_map_cleanup();
 }
@@ -606,7 +633,7 @@ TEST(remove_head_entry_only) {
     pending_map_add((uint8_t*)"THIRD", 5, 3000);
 
     ASSERT_EQ(pending_count, 3, "Should have 3 entries");
-    ASSERT_EQ(strcmp(pending_age_head->key, "FIRST"), 0, "Head is FIRST");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "FIRST"), 0, "Head is FIRST");
 
     // Remove head
     uint64_t ts_out;
@@ -616,9 +643,9 @@ TEST(remove_head_entry_only) {
     ASSERT_EQ(pending_count, 2, "Should have 2 entries");
 
     // Verify head updated
-    ASSERT_EQ(strcmp(pending_age_head->key, "SECOND"), 0, "SECOND is new head");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "SECOND"), 0, "SECOND is new head");
     ASSERT(pending_age_head->age_prev == NULL, "New head has no prev");
-    ASSERT_EQ(strcmp(pending_age_tail->key, "THIRD"), 0, "Tail unchanged");
+    ASSERT_EQ(ord_id_matches(pending_age_tail, "THIRD"), 0, "Tail unchanged");
 
     pending_map_cleanup();
 }
@@ -631,7 +658,7 @@ TEST(remove_tail_entry_only) {
     pending_map_add((uint8_t*)"THIRD", 5, 3000);
 
     ASSERT_EQ(pending_count, 3, "Should have 3 entries");
-    ASSERT_EQ(strcmp(pending_age_tail->key, "THIRD"), 0, "Tail is THIRD");
+    ASSERT_EQ(ord_id_matches(pending_age_tail, "THIRD"), 0, "Tail is THIRD");
 
     // Remove tail
     uint64_t ts_out;
@@ -641,9 +668,9 @@ TEST(remove_tail_entry_only) {
     ASSERT_EQ(pending_count, 2, "Should have 2 entries");
 
     // Verify tail updated
-    ASSERT_EQ(strcmp(pending_age_tail->key, "SECOND"), 0, "SECOND is new tail");
+    ASSERT_EQ(ord_id_matches(pending_age_tail, "SECOND"), 0, "SECOND is new tail");
     ASSERT(pending_age_tail->age_next == NULL, "New tail has no next");
-    ASSERT_EQ(strcmp(pending_age_head->key, "FIRST"), 0, "Head unchanged");
+    ASSERT_EQ(ord_id_matches(pending_age_head, "FIRST"), 0, "Head unchanged");
 
     pending_map_cleanup();
 }
