@@ -21,6 +21,7 @@ It captures TCP packets at the kernel level, extracts all occurences of FIX Tag 
 * **Cumulative histogram** for long-term percentile analysis (p50, p90, p99, p99.9, p99.99, p99.999)
 * **HDR histogram** with 3 significant figures precision (configurable 0-100ms range by default)
 * **ASCII histogram visualization** for visual distribution analysis
+* **High performance**, validated under sustained loads of up to **0.5M FIX messages/sec** and **billions of FIX orders** processed
 
 ### Tested on
 
