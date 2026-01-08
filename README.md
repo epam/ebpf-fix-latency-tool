@@ -90,19 +90,21 @@ sudo ./ebpf-fix-latency-tool -i eth0 -p 8080 -x 500
 
 **Production example with CPU pinning:**
 ```
-$ sudo ./ebpf-fix-latency-tool -i eth0 -p 12001 -c 5 -r 5
-ebpf-fix-latency-tool v0.0.8 | eth0:12001 | tracking up to 16k pending tags (256K RAM) | histogram 0-100ms (85K RAM)
-Userspace thread pinned to CPU core 5
+sudo ./ebpf-fix-latency-tool -i ens5 -p 12001-12050 -r 5 -c 5 -s spin
+libbpf: Kernel error message: Exclusivity flag on, cannot modify
+ebpf-fix-latency-tool v0.0.9 | ens5:12001-12050 | tracking up to 16k pending tags (256K RAM) | histogram 0-100ms (42K RAM)
+Userspace thread pinned to CPU core 5 | CPU spinning idle strategy selected
 Interval stats: MIN/AVG/MAX (5s intervals) | Press '?' for keyboard commands
-[traffic] hooks: ingress=748804 egress=742864 | scanned: ingress=14998 egress=14880 | filters: payload_zero=93 payload_small=2 | fragmented: ingress=0 egress=14880
-[fixlat] matched=14879 inbound=14998 outbound=14880 mismatch=0 | rate: 3661 match/sec | latency: min=12.849us avg=24.105us max=62.849us
-[pending] active=0/16384 stale_evicted=118 forced=0
-[traffic] hooks: ingress=1662788 egress=1656705 | scanned: ingress=33315 egress=33197 | filters: payload_zero=291 payload_small=3 | fragmented: ingress=0 egress=33197
-[fixlat] matched=18317 inbound=33315 outbound=33197 mismatch=0 | rate: 3663 match/sec | latency: min=12.849us avg=24.073us max=87.549us
-[pending] active=1/16384 stale_evicted=118 forced=0
-[traffic] hooks: ingress=2576775 egress=2570257 | scanned: ingress=51616 egress=51498 | filters: payload_zero=902 payload_small=4 | fragmented: ingress=0 egress=51498
-[fixlat] matched=18302 inbound=51616 outbound=51498 mismatch=0 | rate: 3660 match/sec | latency: min=12.849us avg=25.353us max=487.499us
-[pending] active=0/16384 stale_evicted=118 forced=0
+[traffic] hooks: ingress=1008951 egress=943689 | scanned: ingress=914673 egress=914613 | filters: payload_zero=123322 payload_small=1 | fragmented: ingress=0 egress=914613
+[fixlat] matched=914574 inbound=914674 outbound=914624 mismatch=31 dup_ingress=0 negative=0 | rate: 182915 match/sec | latency: min=16.855us avg=303.022us max=1067.702us
+[pending] active=53/16384 stale_evicted=30 forced=0
+[traffic] hooks: ingress=2014412 egress=1887472 | scanned: ingress=1829437 egress=1829386 | filters: payload_zero=242992 payload_small=2 | fragmented: ingress=0 egress=1829386
+[fixlat] matched=914773 inbound=1829438 outbound=1829397 mismatch=18 dup_ingress=0 negative=0 | rate: 182955 match/sec | latency: min=50.771us avg=301.013us max=837.998us
+[pending] active=59/16384 stale_evicted=30 forced=0
+[traffic] hooks: ingress=3023631 egress=2831566 | scanned: ingress=2744153 egress=2744134 | filters: payload_zero=366798 payload_small=3 | fragmented: ingress=0 egress=2744134
+[fixlat] matched=914723 inbound=2744154 outbound=2744152 mismatch=32 dup_ingress=0 negative=0 | rate: 182945 match/sec | latency: min=52.868us avg=303.174us max=1026.541us
+[pending] active=53/16384 stale_evicted=30 forced=0
+...
 ```
 
 ### Keyboard Controls
@@ -115,43 +117,38 @@ While running, press:
 
 **Example cumulative histogram dump (press SPACE):**
 ```
-========== CUMULATIVE HISTOGRAM (all-time, n=238774) ==========
-MIN:      12.149us
-P50:      23.449us
-P90:      33.549us
-P99:      45.049us
-P99.9:    59.249us
-P99.99:   203.499us
-P99.999:  356.499us
-MAX:      487.499us
+========== CUMULATIVE HISTOGRAM (all-time, n=499196989) ==========
+MIN:      13.449us
+P50:      307.499us
+P90:      443.499us
+P99:      544.499us
+P99.9:    607.499us
+P99.99:   681.499us
+P99.999:  1954.999us
+MAX:      25749.999us
 
 Distribution:
-  12.1us-17.0us |################ 24861 (10.4%)
-  17.1us-22.0us |################################################## 73992 (31.0%)
-  22.1us-27.0us |############################################# 67713 (28.4%)
-  27.1us-32.0us |########################### 41146 (17.2%)
-  32.1us-37.0us |############ 19043 (8.0%)
-  37.1us-42.0us |##### 7650 (3.2%)
-  42.1us-47.0us |# 2830 (1.2%)
-  47.1us-52.0us | 941 (0.4%)
-  52.1us-57.0us | 304 (0.1%)
-  57.1us-62.0us | 115 (0.0%)
-  62.1us-67.0us | 54 (0.0%)
-  67.1us-72.0us | 29 (0.0%)
-  72.1us-77.0us | 10 (0.0%)
-  77.1us-82.0us | 8 (0.0%)
-  82.1us-87.0us | 8 (0.0%)
-  87.1us-92.0us | 10 (0.0%)
-  92.1us-97.0us | 4 (0.0%)
- 97.1us-120.5us | 6 (0.0%)
-121.5us-170.5us | 9 (0.0%)
-171.5us-220.5us | 22 (0.0%)
-221.5us-270.5us | 6 (0.0%)
-271.5us-320.5us | 6 (0.0%)
-321.5us-370.5us | 4 (0.0%)
-371.5us-420.5us | 1 (0.0%)
-421.5us-470.5us | 1 (0.0%)
-471.5us-487.5us | 1 (0.0%)
+  13.4us-24.5us | 2261 (0.0%)
+  24.6us-35.7us | 4774 (0.0%)
+  35.8us-46.9us | 4567 (0.0%)
+  47.0us-58.1us | 50660 (0.0%)
+  58.2us-69.3us | 1061267 (0.2%)
+  69.4us-80.5us | 2565529 (0.5%)
+  80.6us-91.7us | 4060757 (0.8%)
+ 91.8us-129.5us |##### 21713919 (4.3%)
+130.5us-241.5us |########################## 106901549 (21.4%)
+242.5us-353.5us |################################################## 204238661 (40.9%)
+354.5us-465.5us |############################### 127043452 (25.4%)
+466.5us-577.5us |####### 29976209 (6.0%)
+578.5us-689.5us | 1530390 (0.3%)
+690.5us-801.5us | 23844 (0.0%)
+802.5us-913.5us | 3835 (0.0%)
+ 914.5us-1.25ms | 4511 (0.0%)
+  1.26ms-2.37ms | 8203 (0.0%)
+  2.38ms-3.49ms | 1779 (0.0%)
+  3.50ms-4.61ms | 733 (0.0%)
+  4.62ms-5.73ms | 88 (0.0%)
+23.45ms-25.75ms | 1 (0.0%)
 ==============================================================
 ```
 
