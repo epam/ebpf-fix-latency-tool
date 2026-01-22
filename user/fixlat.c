@@ -635,6 +635,9 @@ static void dump_cumulative_histogram(void) {
             uint64_t end = i + buckets_per_display;
             if (end > last_bucket + 1) end = last_bucket + 1;
 
+            // Force last row to include all remaining buckets (never drop tail data)
+            if (num_displays == 29) end = last_bucket + 1;
+
             uint64_t count = 0;
             for (uint64_t j = i; j < end; j++) {
                 count += cumulative_histogram[j];
