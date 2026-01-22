@@ -576,7 +576,7 @@ static void dump_cumulative_histogram(void) {
     if (num_buckets == 0 || cumulative_histogram == NULL) return;
     uint64_t total = 0;
     for (uint64_t i = 0; i < num_buckets; i++)
-        total += cumulative_histogram[i];
+        total += cumulative_histogram[i]; // overflow in ~584000 years at 1M matches/sec
 
     if (total == 0) {
         printf("\n[cumulative] No latency samples recorded yet\n\n");
