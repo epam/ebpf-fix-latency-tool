@@ -72,6 +72,83 @@ Distribution:
 ```
 
 
+AL2, 500K msg/sec:
+
+```
+[fixlat] matched=1138606 inbound=8050630786 outbound=8050689489 mismatch=18 dup_ingress=0 negative=0 | rate: 227721 match/sec | latency: min=112.038us avg=691.042us max=1481.339us
+[pending] active=165/16384 stale_evicted=84187 forced=20911
+[traffic] hooks: ingress=10384898495 egress=7997265388 | scanned: ingress=8051767299 egress=6882993813 | filters: payload_zero=3447171221 payload_small=8031 | fragmented: ingress=74 egress=6882993813
+[fixlat] matched=1138405 inbound=8051769248 outbound=8051827906 mismatch=15 dup_ingress=0 negative=0 | rate: 227681 match/sec | latency: min=107.233us avg=737.781us max=6575.788us
+[pending] active=145/16384 stale_evicted=84262 forced=20911
+[traffic] hooks: ingress=10386361963 egress=7998384118 | scanned: ingress=8052905445 egress=6883960351 | filters: payload_zero=3447648705 payload_small=8032 | fragmented: ingress=74 egress=6883960351
+[fixlat] matched=1138142 inbound=8052907394 outbound=8052966068 mismatch=20 dup_ingress=0 negative=0 | rate: 227628 match/sec | latency: min=104.864us avg=686.261us max=1555.118us
+[pending] active=152/16384 stale_evicted=84262 forced=20911
+[traffic] hooks: ingress=10387825634 egress=7999503662 | scanned: ingress=8054043628 egress=6884927471 | filters: payload_zero=3448126596 payload_small=8033 | fragmented: ingress=74 egress=6884927471
+[fixlat] matched=1138159 inbound=8054045577 outbound=8054104237 mismatch=7 dup_ingress=0 negative=0 | rate: 227632 match/sec | latency: min=96.493us avg=685.797us max=3306.606us
+[pending] active=148/16384 stale_evicted=84293 forced=20911
+[traffic] hooks: ingress=10389288790 egress=8000623457 | scanned: ingress=8055181193 egress=6885894942 | filters: payload_zero=3448604482 payload_small=8034 | fragmented: ingress=74 egress=6885894942
+[fixlat] matched=1137542 inbound=8055183142 outbound=8055241790 mismatch=14 dup_ingress=0 negative=0 | rate: 227508 match/sec | latency: min=110.553us avg=684.313us max=1415.920us
+[pending] active=169/16384 stale_evicted=84293 forced=20911
+[traffic] hooks: ingress=10390752149 egress=8001742849 | scanned: ingress=8056319181 egress=6886862313 | filters: payload_zero=3449081855 payload_small=8035 | fragmented: ingress=74 egress=6886862313
+[fixlat] matched=1137987 inbound=8056321130 outbound=8056379789 mismatch=8 dup_ingress=0 negative=0 | rate: 227597 match/sec | latency: min=102.240us avg=685.129us max=1461.786us
+[pending] active=165/16384 stale_evicted=84293 forced=20911
+[traffic] hooks: ingress=10392213577 egress=8002860285 | scanned: ingress=8057457442 egress=6887827861 | filters: payload_zero=3449556887 payload_small=8036 | fragmented: ingress=74 egress=6887827861
+[fixlat] matched=1138274 inbound=8057459391 outbound=8057518072 mismatch=13 dup_ingress=0 negative=0 | rate: 227655 match/sec | latency: min=108.327us avg=690.045us max=1585.924us
+[pending] active=155/16384 stale_evicted=84293 forced=20911
+[traffic] hooks: ingress=10393676812 egress=8003978862 | scanned: ingress=8058595957 egress=6888793979 | filters: payload_zero=3450034040 payload_small=8037 | fragmented: ingress=74 egress=6888793980
+[fixlat] matched=1138516 inbound=8058597906 outbound=8058656604 mismatch=14 dup_ingress=0 negative=0 | rate: 227703 match/sec | latency: min=106.706us avg=686.986us max=1571.297us
+[pending] active=155/16384 stale_evicted=84293 forced=20911
+[traffic] hooks: ingress=10395139635 egress=8005096964 | scanned: ingress=8059733872 egress=6889759593 | filters: payload_zero=3450511396 payload_small=8038 | fragmented: ingress=74 egress=6889759593
+[fixlat] matched=1137918 inbound=8059735821 outbound=8059794558 mismatch=36 dup_ingress=0 negative=0 | rate: 227584 match/sec | latency: min=106.980us avg=686.612us max=1686.505us
+[pending] active=153/16384 stale_evicted=84293 forced=20911
+[traffic] hooks: ingress=10396604263 egress=8006216937 | scanned: ingress=8060872546 egress=6890727157 | filters: payload_zero=3450989723 payload_small=8039 | fragmented: ingress=74 egress=6890727157
+[fixlat] matched=1138659 inbound=8060874495 outbound=8060933245 mismatch=28 dup_ingress=0 negative=0 | rate: 227732 match/sec | latency: min=103.969us avg=685.257us max=1588.953us
+[pending] active=169/16384 stale_evicted=84293 forced=20911
+
+========== CUMULATIVE HISTOGRAM (all-time, n=8058905613) ==========
+MIN:      17.049us
+P50:      638.499us
+P90:      1004.999us
+P99:      1214.999us
+P99.9:    1474.999us
+P99.99:   6364.999us
+P99.999:  45249.999us
+MAX:      100000.000us
+
+Distribution:
+   17.0us-31.0us | 90 (0.0%)
+   31.1us-45.1us | 286 (0.0%)
+   45.2us-59.2us | 590 (0.0%)
+   59.3us-73.3us | 1202 (0.0%)
+   73.4us-87.4us | 2161 (0.0%)
+  87.5us-115.5us | 87157 (0.0%)
+ 116.5us-256.5us |### 183162377 (2.3%)
+ 257.5us-397.5us |############# 681527406 (8.5%)
+ 398.5us-538.5us |####################### 1207151684 (15.0%)
+ 539.5us-679.5us |################################################## 2533807555 (31.4%)
+ 680.5us-820.5us |########################### 1403234735 (17.4%)
+ 821.5us-961.5us |################### 993300038 (12.3%)
+  962.5us-2.02ms |#################### 1052315590 (13.1%)
+   2.03ms-3.43ms | 1550854 (0.0%)
+   3.44ms-4.84ms | 1161663 (0.0%)
+   4.85ms-6.25ms | 763255 (0.0%)
+   6.26ms-7.66ms | 284950 (0.0%)
+   7.67ms-9.07ms | 87219 (0.0%)
+  9.08ms-14.85ms | 177815 (0.0%)
+ 14.95ms-28.95ms | 124739 (0.0%)
+ 29.05ms-43.05ms | 75619 (0.0%)
+ 43.15ms-57.15ms | 40162 (0.0%)
+ 57.25ms-71.25ms | 47389 (0.0%)
+ 71.35ms-85.35ms | 1074 (0.0%)
+99.55ms-100.00ms | 3 (0.0%)
+==============================================================
+```
+
+
+
+
+
+
 AL2, around 280K messages/sec:
 
 
