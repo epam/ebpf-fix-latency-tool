@@ -473,8 +473,6 @@ static bool pending_map_remove(const uint8_t *ord_id, uint8_t ord_id_len, uint64
 
 // Record latency into cumulative histogram and update interval stats
 static void record_latency(uint64_t latency_ns) {
-    if (latency_ns == 0) return;
-
     // Calculate HDR bucket index (3 significant figures)
     uint64_t bucket = hdr_value_to_index(latency_ns);
 
@@ -606,9 +604,9 @@ static void dump_cumulative_histogram(void) {
             break;
         }
     }
-    for (uint64_t i = num_buckets - 1; i > 0; i--) {
-        if (cumulative_histogram[i] > 0) {
-            last_bucket = i;
+    for (uint64_t i = num_buckets; i > 0; i--) {
+        if (cumulative_histogram[i - 1] > 0) {
+            last_bucket = i - 1;
             break;
         }
     }
