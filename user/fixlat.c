@@ -214,7 +214,7 @@ static uint64_t hdr_value_to_index(uint64_t value) {
     return base_index + (value - range_start) / magnitude;
 }
 
-// Map bucket index to representative value (midpoint of bucket)
+// Map bucket index to representative value (upper bound of bucket)
 static uint64_t hdr_index_to_value(uint64_t index) {
     if (index == 0) return 0;
     if (index >= num_buckets) return max_latency_ns;
@@ -240,7 +240,7 @@ static uint64_t hdr_index_to_value(uint64_t index) {
         bucket_max = max_latency_ns;
     }
 
-    return (bucket_min + bucket_max) / 2; // Midpoint
+    return bucket_max; // Upper bound - conservative for latency reporting
 }
 
 // Interval stats: simple tracking (reset each report)
@@ -575,6 +575,7 @@ static void format_latency_compact(uint64_t ns, char *buf, size_t len) {
 
 // Dump detailed cumulative histogram with ASCII visualization
 static void dump_cumulative_histogram(void) {
+    if (num_buckets == 0 || cumulative_histogram == NULL) return;
     uint64_t total = 0;
     for (uint64_t i = 0; i < num_buckets; i++)
         total += cumulative_histogram[i];

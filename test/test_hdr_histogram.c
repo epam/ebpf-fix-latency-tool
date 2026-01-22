@@ -77,7 +77,7 @@ static uint64_t hdr_index_to_value(uint64_t index) {
         bucket_max = max_latency_ns;
     }
 
-    return (bucket_min + bucket_max) / 2;
+    return bucket_max; // Upper bound - conservative for latency reporting
 }
 
 // Test framework
@@ -228,7 +228,7 @@ TEST(index_to_value_first_range) {
     max_latency_ns = 100000000;
     num_buckets = hdr_calculate_num_buckets(max_latency_ns);
 
-    // Range 0-999 (width=1): index N represents bucket [N,N], midpoint = N
+    // Range 0-999 (width=1): index N represents bucket [N,N], upper bound = N
     ASSERT_EQ(hdr_index_to_value(1), 1, "Index 1 -> 1ns");
     ASSERT_EQ(hdr_index_to_value(100), 100, "Index 100 -> 100ns");
     ASSERT_EQ(hdr_index_to_value(500), 500, "Index 500 -> 500ns");
@@ -238,9 +238,9 @@ TEST(index_to_value_second_range) {
     max_latency_ns = 100000000;
     num_buckets = hdr_calculate_num_buckets(max_latency_ns);
 
-    // Range 1000-9999 (width=10): index 1000 = bucket [1000-1009], midpoint=1004
-    ASSERT_EQ(hdr_index_to_value(1000), 1004, "Index 1000 -> 1004ns");
-    ASSERT_EQ(hdr_index_to_value(1001), 1014, "Index 1001 -> 1014ns");
+    // Range 1000-9999 (width=10): index 1000 = bucket [1000-1009], upper bound=1009
+    ASSERT_EQ(hdr_index_to_value(1000), 1009, "Index 1000 -> 1009ns");
+    ASSERT_EQ(hdr_index_to_value(1001), 1019, "Index 1001 -> 1019ns");
 }
 
 TEST(roundtrip_value_index_value) {
