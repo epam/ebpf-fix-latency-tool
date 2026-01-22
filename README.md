@@ -40,9 +40,9 @@ eBPF logic is sensitive to verifier constraints (design and tag 11 parsing algor
 
 ```bash
 # Download latest release and extact it
-wget https://github.com/epam/ebpf-fix-latency-tool/releases/latest/download/ebpf-fix-latency-tool-0.0.8.zip
-unzip ebpf-fix-latency-tool-0.0.8.zip
-cd ebpf-fix-latency-tool-0.0.8/
+wget https://github.com/epam/ebpf-fix-latency-tool/releases/latest/download/ebpf-fix-latency-tool-0.0.9.zip
+unzip ebpf-fix-latency-tool-0.0.9.zip
+cd ebpf-fix-latency-tool-0.0.9/
 ```
 
 
